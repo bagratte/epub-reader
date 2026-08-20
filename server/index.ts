@@ -3,9 +3,9 @@ import fastifyStatic from '@fastify/static'
 import { createReadStream } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { openDb, type BookRow } from './db.ts'
+import { openDb, type BookRow, type ProgressRow } from './db.ts'
 import { scanLibrary } from './library.ts'
-import type { Book } from '../shared/types.ts'
+import type { Book, Progress } from '../shared/types.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const LIBRARY_DIR = process.env.LIBRARY_DIR ?? join(root, 'library')
@@ -58,7 +58,13 @@ const COVER_MEDIA_TYPES: Record<string, string> = {
 const coverMediaType = (file: string) =>
   COVER_MEDIA_TYPES[file.split('.').pop() ?? ''] ?? 'application/octet-stream'
 
-const toBook = (row: BookRow): Book => ({
+type BookWithProgress = BookRow & {
+  fraction: number | null
+  furthest: number | null
+  progress_updated_at: number | null
+}
+
+const toBook = (row: BookWithProgress): Book => ({
   id: row.id,
   filename: row.path,
   size: row.size,
@@ -66,16 +72,35 @@ const toBook = (row: BookRow): Book => ({
   author: row.author ?? undefined,
   language: row.language ?? undefined,
   hasCover: row.cover_path != null,
+  progress: row.progress_updated_at == null ? undefined : {
+    fraction: row.fraction!,
+    furthest: row.furthest!,
+    updatedAt: row.progress_updated_at,
+  },
 })
 
+const toProgress = (row: ProgressRow): Progress => ({
+  bookId: row.book_id,
+  cfi: row.cfi,
+  fraction: row.fraction,
+  furthest: row.furthest,
+  updatedAt: row.updated_at,
+  device: row.device ?? undefined,
+})
+
+const BOOK_SELECT = `
+  SELECT b.*, p.fraction, p.furthest, p.updated_at AS progress_updated_at
+  FROM books b LEFT JOIN progress p ON p.book_id = b.id
+`
+
 const bookById = (id: string) =>
-  db.prepare('SELECT * FROM books WHERE id = ?').get(id) as unknown as BookRow | undefined
+  db.prepare(`${BOOK_SELECT} WHERE b.id = ?`).get(id) as unknown as BookWithProgress | undefined
 
 app.get('/api/books', async () => {
   const rows = db.prepare(`
-    SELECT * FROM books
-    ORDER BY COALESCE(NULLIF(author, ''), 'zzz'), COALESCE(NULLIF(title, ''), path)
-  `).all() as unknown as BookRow[]
+    ${BOOK_SELECT}
+    ORDER BY COALESCE(NULLIF(b.author, ''), 'zzz'), COALESCE(NULLIF(b.title, ''), b.path)
+  `).all() as unknown as BookWithProgress[]
   return rows.map(toBook)
 })
 
@@ -107,6 +132,56 @@ app.get<{ Params: { id: string } }>('/api/books/:id/cover', async (req, reply) =
     .header('cache-control', 'private, max-age=31536000, immutable')
     .send(createReadStream(join(COVER_DIR, row.cover_path)))
 })
+
+app.get<{ Params: { id: string } }>('/api/progress/:id', async (req, reply) => {
+  const row = db.prepare('SELECT * FROM progress WHERE book_id = ?')
+    .get(req.params.id) as unknown as ProgressRow | undefined
+  // 204 rather than 404: "never opened" is a normal answer, and a 404 paints a
+  // red error in devtools every time an unread book is opened.
+  return row ? toProgress(row) : reply.code(204).send()
+})
+
+app.put<{ Params: { id: string }; Body: { cfi: string; fraction: number; device?: string } }>(
+  '/api/progress/:id',
+  {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['cfi', 'fraction'],
+        additionalProperties: false,
+        properties: {
+          cfi: { type: 'string', minLength: 1, maxLength: 4096 },
+          fraction: { type: 'number', minimum: 0, maximum: 1 },
+          device: { type: 'string', maxLength: 128 },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    if (!bookById(req.params.id)) return reply.code(404).send({ error: 'no such book' })
+
+    const { cfi, fraction, device } = req.body
+    // updated_at is assigned here, never taken from the client — device clocks
+    // drift and this timestamp is what ordering depends on.
+    const updatedAt = Date.now()
+
+    db.prepare(`
+      INSERT INTO progress (book_id, cfi, fraction, furthest, updated_at, device)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(book_id) DO UPDATE SET
+        cfi = excluded.cfi,
+        fraction = excluded.fraction,
+        -- high-water mark only ever climbs
+        furthest = MAX(progress.furthest, excluded.fraction),
+        updated_at = excluded.updated_at,
+        device = excluded.device
+    `).run(req.params.id, cfi, fraction, fraction, updatedAt, device ?? null)
+
+    const row = db.prepare('SELECT * FROM progress WHERE book_id = ?')
+      .get(req.params.id) as unknown as ProgressRow
+    return toProgress(row)
+  },
+)
 
 app.post('/api/library/scan', async () => scanLibrary(db, LIBRARY_DIR, COVER_DIR))
 

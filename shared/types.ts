@@ -9,6 +9,14 @@ export interface Book {
   author?: string
   language?: string
   hasCover: boolean
+  /** Omitted when the book has never been opened. */
+  progress?: ProgressSummary
+}
+
+export interface ProgressSummary {
+  fraction: number
+  furthest: number
+  updatedAt: number
 }
 
 export interface Progress {

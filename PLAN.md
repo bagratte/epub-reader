@@ -140,6 +140,21 @@ No conflict prompt in v1: one reader, one server, and `updated_at` is
 server-assigned. The prompt only earns its place once there are offline
 replicas that can diverge.
 
+**Implemented as:** every relocate writes IndexedDB and marks the record
+`pending`; the network PUT is debounced 1s. `pending` is what makes the merge
+work without ever comparing a device clock to a server clock — a pending record
+holds writes the server has not seen, so it wins outright. Otherwise the higher
+`updated_at` wins, and both of those come from the server. This is also exactly
+the hook the offline retry queue needs: today nothing ever retries a pending
+record, and that is the only missing piece.
+
+`GET /api/progress/:id` returns **204, not 404**, when a book has never been
+opened. 404 is defensible but paints a red error in devtools every single time
+an unread book is opened, which buries real failures.
+
+Flushing on `pagehide`/`visibilitychange` uses `fetch(..., { keepalive: true })`.
+`sendBeacon` also survives teardown but can only issue POST, and this is a PUT.
+
 ## Security
 
 EPUB content is untrusted HTML in an iframe. foliate-js refuses to run scripted
@@ -169,7 +184,7 @@ keyboard, click zones. *You can read a book end to end.*
 Scan, hash, OPF parse, cover extraction and caching. Grid UI, routing,
 back-navigation. CSP landed here rather than M4 — see below.
 
-**M3 — Progress** (~1 day)
+**M3 — Progress** ✅
 Schema, endpoints, IndexedDB local-first store, restore on open, progress bars
 in the grid. *Close the laptop, open the phone, continue.*
 
@@ -194,8 +209,9 @@ HTTPS via `tailscale cert` (needed before offline).
 
 ## Implementation notes
 
-Status: **M0, M1, M2 complete.** Five books scan with covers and metadata,
-the grid routes into the reader, and the CSP is live.
+Status: **M0–M3 complete.** Five books scan with covers and metadata, the grid
+routes into the reader, the CSP is live, and reading position survives reloads
+and moves between devices.
 
 Non-obvious things found while wiring foliate-js — all cost time to rediscover:
 
@@ -229,6 +245,16 @@ Non-obvious things found while wiring foliate-js — all cost time to rediscover
   document exists. Non-fatal, and it recovers. Resizing a settled book is
   clean apart from the browser's benign "ResizeObserver loop completed"
   notice. Not patched; it's vendor code.
+
+### M3 notes
+
+- `view.goTo(cfi)` works as the *first* navigation, so resuming skips
+  `renderer.next()` entirely rather than rendering page one and jumping away
+  from it. It's wrapped in a try/catch: a CFI stops resolving if the file was
+  replaced, and falling back to the start beats showing nothing.
+- The relocate handler checks the load token before recording. Without it a
+  late relocate from a book the user already navigated away from overwrites the
+  new book's position.
 
 ### Our own bugs worth remembering
 

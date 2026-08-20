@@ -1,6 +1,8 @@
 import { Reader } from './reader.ts'
 import { renderShelf } from './library.ts'
 import { fetchBookFile, getBook, listBooks, rescan } from './api.ts'
+import { ProgressStore } from './store/progress.ts'
+import { deviceName } from './store/device.ts'
 
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!
 
@@ -14,6 +16,7 @@ const pctEl = $<HTMLElement>('#pct')
 const setStatus = (text = '') => { statusEl.textContent = text }
 
 let reader: Reader | undefined
+const progress = new ProgressStore()
 /** Guards against a slow book load finishing after the user has navigated on. */
 let loadToken = 0
 
@@ -43,20 +46,32 @@ async function showBook(id: string) {
   setStatus('Loading…')
 
   try {
-    const book = await getBook(id)
+    const [book, saved] = await Promise.all([getBook(id), progress.load(id)])
     const file = await fetchBookFile(book)
     if (token !== loadToken) return
 
     reader ??= new Reader($('#view'))
-    reader.onRelocate(({ fraction, label }) => {
+    reader.onRelocate(({ cfi, fraction, label }) => {
+      // A late relocate from a book the user has already navigated away from
+      // must not overwrite the new book's position.
+      if (token !== loadToken) return
       labelEl.textContent = label
       pctEl.textContent = `${Math.round(fraction * 100)}%`
+      progress.record(id, cfi, fraction)
     })
-    await reader.open(file)
+
+    await reader.open(file, { start: saved?.cfi })
     if (token !== loadToken) return
 
     document.title = book.title ?? book.filename
-    setStatus()
+    if (saved) {
+      const where = `${Math.round(saved.fraction * 100)}%`
+      const who = saved.device && saved.device !== deviceName() ? ` from ${saved.device}` : ''
+      setStatus(`Resumed at ${where}${who}`)
+      setTimeout(() => { if (token === loadToken) setStatus() }, 3200)
+    } else {
+      setStatus()
+    }
   } catch (err) {
     if (token === loadToken) setStatus(`Could not open book: ${(err as Error).message}`)
   }
@@ -93,6 +108,13 @@ document.addEventListener('keydown', e => {
 
 $('#prev').addEventListener('click', () => reader?.goLeft())
 $('#next').addEventListener('click', () => reader?.goRight())
+
+// Position changes are debounced, so a tab closing mid-debounce would lose the
+// last page turn without this.
+addEventListener('pagehide', () => progress.flush())
+addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') progress.flush()
+})
 
 addEventListener('hashchange', route)
 route()

@@ -24,13 +24,25 @@ function cover(book: Book): HTMLElement {
   return blank
 }
 
+/** A thin rule under the cover; absent entirely for an unopened book. */
+function progressBar(book: Book): HTMLElement | null {
+  if (!book.progress) return null
+  const pct = Math.round(book.progress.fraction * 100)
+  const bar = el('div', { className: 'progress' })
+  bar.style.setProperty('--pct', `${pct}%`)
+  bar.title = `${pct}% read`
+  return bar
+}
+
 export function renderShelf(shelf: HTMLElement, books: Book[]) {
   shelf.replaceChildren(...books.map(book => {
     const link = el('a', { href: `#/book/${book.id}` })
-    link.append(
-      cover(book),
-      el('div', { className: 'title', textContent: book.title ?? book.filename }),
-    )
+    const art = el('div', { className: 'artwrap' })
+    art.append(cover(book))
+    const bar = progressBar(book)
+    if (bar) art.append(bar)
+
+    link.append(art, el('div', { className: 'title', textContent: book.title ?? book.filename }))
     if (book.author) link.append(el('div', { className: 'author', textContent: book.author }))
 
     const item = el('li', { className: 'book' })

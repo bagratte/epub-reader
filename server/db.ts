@@ -68,3 +68,12 @@ export interface BookRow {
   cover_path: string | null
   added_at: number
 }
+
+export interface ProgressRow {
+  book_id: string
+  cfi: string
+  fraction: number
+  furthest: number
+  updated_at: number
+  device: string | null
+}

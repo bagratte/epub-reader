@@ -60,7 +60,10 @@ export class Reader {
     })
   }
 
-  async open(file: File, opts: { flow?: FlowMode; style?: ReadingStyle } = {}) {
+  async open(
+    file: File,
+    opts: { flow?: FlowMode; style?: ReadingStyle; start?: string } = {},
+  ) {
     // foliate's open() appends a renderer without removing the previous one,
     // so reusing a view across books stacks paginators: each keeps the old
     // book's iframe alive and still fires `relocate` on resize, for the wrong
@@ -76,7 +79,18 @@ export class Reader {
     renderer.setStyles?.(contentCSS(opts.style ?? DEFAULT_STYLE))
 
     // The paginator loads nothing until told to. Without this the view stays
-    // blank with no error — foliate's own demo does the same thing.
+    // blank with no error — foliate's own demo does the same thing. Going
+    // straight to a saved position counts, and avoids rendering page one only
+    // to jump away from it.
+    if (opts.start) {
+      try {
+        await this.#view.goTo(opts.start)
+        return
+      } catch {
+        // A CFI can stop resolving if the file was replaced. Fall back to the
+        // start rather than showing nothing.
+      }
+    }
     renderer.next()
   }
 

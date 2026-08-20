@@ -4,6 +4,7 @@
   --muted: #8a8580;
   --line: #e4e0da;
   --raise: rgba(0, 0, 0, 0.12);
+  --accent: #9a5b2c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -12,6 +13,7 @@
     --muted: #7d7787;
     --line: #2a2833;
     --raise: rgba(0, 0, 0, 0.5);
+    --accent: #c98a52;
   }
 }
 
@@ -112,6 +114,26 @@ html, body {
 }
 .book .art.blank b { font-size: 0.85rem; font-weight: 600; line-height: 1.25; }
 .book .art.blank span { font-size: 0.72rem; color: var(--muted); }
+
+.book .artwrap { display: flex; flex-direction: column; gap: 0.45rem; }
+
+/* Sits below the cover rather than over it: cover art is unpredictable and a
+   bar drawn on top of it disappears against half the books in a library. */
+.book .progress {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.book .progress::before {
+  content: '';
+  display: block;
+  height: 100%;
+  width: var(--pct, 0%);
+  min-width: 3px;
+  border-radius: inherit;
+  background: var(--accent);
+}
 
 .book .title {
   font-size: 0.82rem;
