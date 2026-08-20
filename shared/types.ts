@@ -5,9 +5,10 @@ export interface Book {
   id: string
   filename: string
   size: number
-  /** Populated in M2, once the OPF is parsed. */
   title?: string
   author?: string
+  language?: string
+  hasCover: boolean
 }
 
 export interface Progress {

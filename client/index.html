@@ -4,16 +4,28 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Reader</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%93%96%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <main id="app">
-      <div id="status">Loading…</div>
+    <div id="status" role="status"></div>
+
+    <section id="library" hidden>
+      <header>
+        <h1>Library</h1>
+        <button id="rescan" type="button">Rescan</button>
+      </header>
+      <ul id="shelf"></ul>
+    </section>
+
+    <section id="reader" hidden>
       <foliate-view id="view"></foliate-view>
-    </main>
-    <button id="prev" class="nav" aria-label="Previous page">‹</button>
-    <button id="next" class="nav" aria-label="Next page">›</button>
-    <div id="footer"><span id="label"></span><span id="pct"></span></div>
+      <button id="back" class="chrome" type="button" aria-label="Back to library">‹ Library</button>
+      <button id="prev" class="nav" type="button" aria-label="Previous page">‹</button>
+      <button id="next" class="nav" type="button" aria-label="Next page">›</button>
+      <footer id="bar"><span id="label"></span><span id="pct"></span></footer>
+    </section>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

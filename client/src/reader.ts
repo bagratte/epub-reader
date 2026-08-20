@@ -48,6 +48,9 @@ const contentCSS = ({ spacing, justify, hyphenate }: ReadingStyle) => `
 export class Reader {
   #view: any
   #onRelocate?: (r: Relocation) => void
+  /** foliate's close() is not idempotent — Paginator.destroy() nulls its own
+   *  view and then dereferences it on a second call. Track state ourselves. */
+  #opened = false
 
   constructor(element: Element) {
     this.#view = element
@@ -58,7 +61,14 @@ export class Reader {
   }
 
   async open(file: File, opts: { flow?: FlowMode; style?: ReadingStyle } = {}) {
+    // foliate's open() appends a renderer without removing the previous one,
+    // so reusing a view across books stacks paginators: each keeps the old
+    // book's iframe alive and still fires `relocate` on resize, for the wrong
+    // book. close() is foliate's own teardown; it just never calls it itself.
+    this.close()
+
     await this.#view.open(file)
+    this.#opened = true
 
     // The renderer only exists after open(), so everything below must follow it.
     const renderer = this.#view.renderer
@@ -91,6 +101,13 @@ export class Reader {
   prev() { return this.#view.prev() }
 
   goTo(target: string) { return this.#view.goTo(target) }
+
+  /** Frees the book's iframe and listeners. Safe to call when nothing is open. */
+  close() {
+    if (!this.#opened) return
+    this.#opened = false
+    this.#view.close()
+  }
 
   get metadata() { return this.#view.book?.metadata }
 }

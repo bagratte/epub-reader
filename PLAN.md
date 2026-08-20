@@ -10,7 +10,7 @@ laptop over the home VPN.
 | Renderer | **foliate-js**, vendored as a git submodule | Actively maintained; epub.js hasn't published since 2023. Handles CFI, RTL/vertical, fixed-layout, search, footnotes. The `foliate-js` package on npm is a stale third-party republish — do not use it. |
 | Topology | Home server, VPN as perimeter, **no auth** | One server = one source of truth. There are no replicas, so there is no sync problem to solve. |
 | Offline | **Online-only in v1**, structured so offline is additive | See "Invariants" below — the retrofit is ~3 days *if* those hold. |
-| Server | Node + TypeScript, Fastify, better-sqlite3 | Shared types with the client; the API is small. |
+| Server | Node + TypeScript, Fastify, `node:sqlite` | Shared types with the client; the API is small. Node ships SQLite now, so no native dependency. |
 | Client | Vite + vanilla TS, no framework | `<foliate-view>` is a web component; a framework would only sit between us and the renderer. |
 | Flow modes | Both paginated and scrolled | It's a foliate-js toggle, not a fork in the design. |
 | Profiles | Deferred (single reader) | Adding later = change `progress` PK to `(profile_id, book_id)`. One migration. |
@@ -105,7 +105,8 @@ epub-reader/
 ├── shared/types.ts           Book, Progress — imported by client AND server
 ├── server/
 │   ├── index.ts              Fastify, static, CSP headers
-│   ├── db.ts                 better-sqlite3 + migrations
+│   ├── db.ts                 node:sqlite + migrations
+│   ├── epub-meta.ts          container.xml -> OPF -> title/author/cover
 │   ├── library.ts            scan, hash, OPF parse, cover extract
 │   └── routes/
 ├── client/
@@ -164,9 +165,9 @@ Repo init, Vite client + Fastify server with dev proxy, foliate-js submodule,
 One hardcoded EPUB. `GET /api/books/:id/file` → Blob → `view.open()`. Prev/next,
 keyboard, click zones. *You can read a book end to end.*
 
-**M2 — Library** (~1–2 days)
+**M2 — Library** ✅
 Scan, hash, OPF parse, cover extraction and caching. Grid UI, routing,
-back-navigation.
+back-navigation. CSP landed here rather than M4 — see below.
 
 **M3 — Progress** (~1 day)
 Schema, endpoints, IndexedDB local-first store, restore on open, progress bars
@@ -193,8 +194,8 @@ HTTPS via `tailscale cert` (needed before offline).
 
 ## Implementation notes
 
-Status: **M0 and M1 complete.** Frankenstein renders, paginates, and reports
-chapter + percentage.
+Status: **M0, M1, M2 complete.** Five books scan with covers and metadata,
+the grid routes into the reader, and the CSP is live.
 
 Non-obvious things found while wiring foliate-js — all cost time to rediscover:
 
@@ -214,13 +215,53 @@ Non-obvious things found while wiring foliate-js — all cost time to rediscover
 - **Vite binds `::1` only.** Fine for dev; `--host` will be needed to reach it
   from a phone.
 
-### Security finding
+### More foliate-js quirks (M2)
 
-foliate-js renders book content in an iframe with
-`sandbox="allow-same-origin allow-scripts"`, which the browser warns "can escape
-its sandboxing" — and it's right, that combination defeats sandbox isolation.
-foliate-js needs same-origin to walk the document for CFIs and pagination.
+- **`view.close()` is not idempotent.** `Paginator.destroy()` sets its own
+  `#view = null` and then dereferences it on a second call. `Reader` tracks an
+  `#opened` flag rather than calling it twice.
+- **`view.open()` never removes the previous renderer.** Reusing one
+  `<foliate-view>` across books stacks paginators — each retaining the old
+  book's iframe and still firing `relocate` on resize, for the wrong book.
+  `close()` is the fix and foliate simply never calls it itself.
+- **Resizing *during* a book load** throws `Cannot destructure property 'style'
+  of 'el'` from `columnize()` — the ResizeObserver fires before the section
+  document exists. Non-fatal, and it recovers. Resizing a settled book is
+  clean apart from the browser's benign "ResizeObserver loop completed"
+  notice. Not patched; it's vendor code.
 
-This makes the CSP in the Security section **load-bearing rather than
-defence-in-depth**. It is not yet implemented — Vite's dev server serves without
-it. Must land before this is reachable from anything.
+### Our own bugs worth remembering
+
+- `#reader { display: flex }` silently beat the UA's `[hidden] { display: none }`,
+  leaving reader chrome floating over the library. There's now a global
+  `[hidden] { display: none !important }`.
+- Covers were served as `image/jpg`, which is not a media type. The extension
+  map is reversed explicitly in `coverMediaType()`.
+
+### Security
+
+The CSP is **implemented** and applied to every response.
+
+It is load-bearing rather than defence-in-depth: foliate-js renders book content
+in an iframe with `sandbox="allow-same-origin allow-scripts"`, which the browser
+warns "can escape its sandboxing" — correctly. foliate-js needs same-origin to
+walk the document for CFIs, so the sandbox attribute cannot be the boundary.
+
+`blob:` is required in `script-src`, `frame-src`, `img-src` **and `style-src`**.
+The last one is easy to miss and fails silently: a book's own stylesheets are
+loaded as blob: URLs, so without it every EPUB renders unstyled with only a
+console error to show for it. Allowing it is safe here — CSS cannot execute, and
+`img-src` stays same-origin, so there's no exfiltration path.
+
+Note that Vite's dev server does **not** apply these headers — only Fastify does.
+Test the CSP against `npm run build` + `NODE_ENV=production npm start`, never
+`npm run dev`. Verified: three books open with zero `securitypolicyviolation`
+events.
+
+### Build
+
+foliate-js's `pdf.js` breaks `vite build` (it uses `new URL(\`vendor/pdfjs/…\`,
+import.meta.url)`, which Vite's import-glob transform rejects). A `resolveId`
+plugin in `vite.config.ts` swaps it for a stub. An alias cannot do this —
+foliate imports it as `'./pdf.js'` and Vite aliases the specifier, not the
+resolved path. Undo the stub if PDF support is ever wanted.

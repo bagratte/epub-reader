@@ -2,12 +2,24 @@
   --bg: #faf9f7;
   --fg: #1a1a1a;
   --muted: #8a8580;
+  --line: #e4e0da;
+  --raise: rgba(0, 0, 0, 0.12);
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #16151a; --fg: #e8e6e3; --muted: #6f6a75; }
+  :root {
+    --bg: #16151a;
+    --fg: #e8e6e3;
+    --muted: #7d7787;
+    --line: #2a2833;
+    --raise: rgba(0, 0, 0, 0.5);
+  }
 }
 
 * { box-sizing: border-box; }
+
+/* Section rules below set `display`, which would otherwise beat the UA's
+   `[hidden] { display: none }`. */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -18,19 +30,111 @@ html, body {
   overscroll-behavior: none;
 }
 
-#app { height: 100%; display: flex; }
-
-foliate-view { flex: 1; min-width: 0; }
-
 #status {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
+  position: fixed;
+  inset-inline: 0;
+  top: 0;
+  padding: 0.5rem 1rem;
+  text-align: center;
   color: var(--muted);
-  pointer-events: none;
+  font-size: 0.8rem;
+  z-index: 10;
 }
 #status:empty { display: none; }
+
+/* ---------- library ---------- */
+
+#library { max-width: 72rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+#library header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+#library h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; }
+
+#rescan {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.25rem 0.85rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+#rescan:hover { color: var(--fg); border-color: var(--muted); }
+
+#shelf {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 2rem 1.5rem;
+}
+
+.book { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.book a {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 3px;
+}
+.book a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+
+.book .art {
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--line);
+  border-radius: 2px;
+  box-shadow: 0 1px 2px var(--raise), 0 6px 16px -6px var(--raise);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.book a:hover .art {
+  transform: translateY(-3px);
+  box-shadow: 0 2px 4px var(--raise), 0 14px 28px -10px var(--raise);
+}
+
+/* Fallback when the EPUB carries no cover image. */
+.book .art.blank {
+  display: grid;
+  align-content: center;
+  gap: 0.4rem;
+  padding: 1rem 0.9rem;
+  background: linear-gradient(160deg, var(--line), var(--bg));
+  border: 1px solid var(--line);
+}
+.book .art.blank b { font-size: 0.85rem; font-weight: 600; line-height: 1.25; }
+.book .art.blank span { font-size: 0.72rem; color: var(--muted); }
+
+.book .title {
+  font-size: 0.82rem;
+  line-height: 1.3;
+  /* Long titles are the norm; clamp rather than let rows jump around. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.book .author { font-size: 0.75rem; color: var(--muted); }
+
+#shelf:empty::after {
+  content: 'No books. Drop an .epub into library/ and press Rescan.';
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---------- reader ---------- */
+
+#reader { position: fixed; inset: 0; display: flex; }
+foliate-view { flex: 1; min-width: 0; }
 
 .nav {
   position: fixed;
@@ -50,15 +154,32 @@ foliate-view { flex: 1; min-width: 0; }
 #prev { left: 0; }
 #next { right: 0; }
 
-#footer {
+.chrome {
   position: fixed;
+  top: calc(0.5rem + env(safe-area-inset-top));
+  left: 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+.chrome:hover, .chrome:focus-visible { opacity: 1; color: var(--fg); }
+
+#bar {
+  position: fixed;
+  inset-inline: 0;
   bottom: 0;
-  left: 0;
-  right: 0;
   display: flex;
   justify-content: space-between;
+  gap: 1rem;
   padding: 0.35rem 1rem calc(0.35rem + env(safe-area-inset-bottom));
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: var(--muted);
   pointer-events: none;
 }
+#label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
