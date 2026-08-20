@@ -1,69 +1,77 @@
 import '../../vendor/foliate-js/view.js'
+import { FootnoteHandler } from '../../vendor/foliate-js/footnotes.js'
+import { contentCSS, type Settings } from './settings.ts'
 
 export interface Relocation {
   cfi: string
   fraction: number
   label: string
+  /** TOC href of the section now on screen, for highlighting the contents list. */
+  tocHref?: string
 }
 
-export type FlowMode = 'paginated' | 'scrolled'
-
-export interface ReadingStyle {
-  /** line-height for body text. */
-  spacing: number
-  justify: boolean
-  hyphenate: boolean
+export interface TocEntry {
+  label: string
+  href?: string
+  subitems?: TocEntry[]
 }
 
-const DEFAULT_STYLE: ReadingStyle = { spacing: 1.5, justify: true, hyphenate: true }
+export interface SearchHit {
+  cfi: string
+  excerpt: { pre: string; match: string; post: string }
+}
 
-/** Injected into the book's iframe document, not the app document. */
-const contentCSS = ({ spacing, justify, hyphenate }: ReadingStyle) => `
-  @namespace epub "http://www.idpf.org/2007/ops";
-  html { color-scheme: light dark; }
-  /* https://github.com/whatwg/html/issues/5426 */
-  @media (prefers-color-scheme: dark) {
-    a:link { color: lightblue; }
-  }
-  p, li, blockquote, dd {
-    line-height: ${spacing};
-    text-align: ${justify ? 'justify' : 'start'};
-    -webkit-hyphens: ${hyphenate ? 'auto' : 'manual'};
-    hyphens: ${hyphenate ? 'auto' : 'manual'};
-    hanging-punctuation: allow-end last;
-    widows: 2;
-  }
-  /* don't let the above override an explicit align attribute */
-  [align="left"] { text-align: left; }
-  [align="right"] { text-align: right; }
-  [align="center"] { text-align: center; }
-  [align="justify"] { text-align: justify; }
-  pre { white-space: pre-wrap !important; }
-`
+export interface SearchGroup {
+  label: string
+  hits: SearchHit[]
+}
 
 /**
- * Thin wrapper over <foliate-view>. Keeps foliate's untyped surface in one
- * place so the rest of the client talks to something typed.
+ * Thin typed wrapper over <foliate-view>, which ships no types and has a few
+ * sharp edges (see PLAN.md). Everything the app touches goes through here.
  */
 export class Reader {
   #view: any
   #onRelocate?: (r: Relocation) => void
+  #footnotes = new FootnoteHandler()
   /** foliate's close() is not idempotent — Paginator.destroy() nulls its own
    *  view and then dereferences it on a second call. Track state ourselves. */
   #opened = false
 
-  constructor(element: Element) {
+  constructor(element: Element, onFootnote: (view: HTMLElement) => void) {
     this.#view = element
+
     this.#view.addEventListener('relocate', (e: CustomEvent) => {
       const { cfi, fraction, tocItem } = e.detail
-      this.#onRelocate?.({ cfi, fraction, label: tocItem?.label ?? '' })
+      this.#onRelocate?.({
+        cfi, fraction,
+        label: tocItem?.label ?? '',
+        tocHref: tocItem?.href,
+      })
+    })
+
+    // Footnote links open in place rather than navigating away from the page.
+    this.#view.addEventListener('link', (e: CustomEvent) => {
+      this.#footnotes.handle(this.#view.book, e)?.catch(() => {
+        // Not a footnote after all, or it wouldn't resolve — let it navigate.
+        this.#view.goTo(e.detail.href).catch(() => {})
+      })
+    })
+    // 'before-render' is the one that matters: the popover's view is created
+    // detached, and a detached paginator never renders. foliate fires this so
+    // the host can attach it first. Listening only to 'render' means the
+    // promise never settles and the note silently never opens.
+    this.#footnotes.addEventListener('before-render', (e: Event) => {
+      onFootnote((e as CustomEvent).detail.view)
+    })
+
+    this.#view.addEventListener('external-link', (e: CustomEvent) => {
+      // Opening arbitrary URLs from an untrusted book is not something we do.
+      e.preventDefault()
     })
   }
 
-  async open(
-    file: File,
-    opts: { flow?: FlowMode; style?: ReadingStyle; start?: string } = {},
-  ) {
+  async open(file: File, settings: Settings, start?: string) {
     // foliate's open() appends a renderer without removing the previous one,
     // so reusing a view across books stacks paginators: each keeps the old
     // book's iframe alive and still fires `relocate` on resize, for the wrong
@@ -72,47 +80,64 @@ export class Reader {
 
     await this.#view.open(file)
     this.#opened = true
-
-    // The renderer only exists after open(), so everything below must follow it.
-    const renderer = this.#view.renderer
-    renderer.setAttribute('flow', opts.flow ?? 'paginated')
-    renderer.setStyles?.(contentCSS(opts.style ?? DEFAULT_STYLE))
+    this.applySettings(settings)
 
     // The paginator loads nothing until told to. Without this the view stays
     // blank with no error — foliate's own demo does the same thing. Going
     // straight to a saved position counts, and avoids rendering page one only
     // to jump away from it.
-    if (opts.start) {
+    if (start) {
       try {
-        await this.#view.goTo(opts.start)
+        await this.#view.goTo(start)
         return
       } catch {
-        // A CFI can stop resolving if the file was replaced. Fall back to the
+        // A CFI stops resolving if the file was replaced. Fall back to the
         // start rather than showing nothing.
       }
     }
-    renderer.next()
+    this.#view.renderer.next()
   }
 
-  setFlow(flow: FlowMode) {
-    this.#view.renderer?.setAttribute('flow', flow)
-  }
-
-  setStyle(style: ReadingStyle) {
-    this.#view.renderer?.setStyles?.(contentCSS(style))
+  /** Safe to call while a book is open; foliate re-renders in place. */
+  applySettings(settings: Settings) {
+    const renderer = this.#view.renderer
+    if (!renderer) return
+    renderer.setAttribute('flow', settings.flow)
+    renderer.setAttribute('margin', `${settings.margin}px`)
+    renderer.setAttribute('gap', '6%')
+    renderer.setAttribute('max-column-count', String(settings.maxColumns))
+    renderer.setStyles?.(contentCSS(settings))
   }
 
   onRelocate(fn: (r: Relocation) => void) {
     this.#onRelocate = fn
   }
 
+  get toc(): TocEntry[] {
+    return this.#view.book?.toc ?? []
+  }
+
+  get metadata() {
+    return this.#view.book?.metadata
+  }
+
+  /**
+   * Streams grouped hits so the panel can fill in as the book is scanned —
+   * a full-book search on a long novel takes a noticeable moment.
+   */
+  async *search(query: string): AsyncGenerator<SearchGroup | { progress: number }> {
+    for await (const result of this.#view.search({ query, scope: 'book' })) {
+      if (result === 'done') return
+      if ('progress' in result) yield { progress: result.progress }
+      else if (result.subitems) yield { label: result.label, hits: result.subitems }
+    }
+  }
+
+  clearSearch() { this.#view.clearSearch?.() }
+
   /** Direction-aware: in an RTL book these swap. Use for left/right controls. */
   goLeft() { return this.#view.goLeft() }
   goRight() { return this.#view.goRight() }
-
-  /** Logical order, regardless of writing direction. */
-  next() { return this.#view.next() }
-  prev() { return this.#view.prev() }
 
   goTo(target: string) { return this.#view.goTo(target) }
 
@@ -122,6 +147,4 @@ export class Reader {
     this.#opened = false
     this.#view.close()
   }
-
-  get metadata() { return this.#view.book?.metadata }
 }

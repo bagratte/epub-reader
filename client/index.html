@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="status" role="status"></div>
+    <div id="status" role="status" aria-live="polite"></div>
 
     <section id="library" hidden>
       <header>
@@ -20,10 +20,38 @@
 
     <section id="reader" hidden>
       <foliate-view id="view"></foliate-view>
-      <button id="back" class="chrome" type="button" aria-label="Back to library">‹ Library</button>
+
+      <div id="chrome">
+        <button id="back" type="button">‹ Library</button>
+        <div class="spacer"></div>
+        <button id="toc-btn" type="button" aria-label="Contents and search">Contents</button>
+        <button id="display-btn" type="button" aria-label="Display settings">
+          <span aria-hidden="true">A</span><span class="big" aria-hidden="true">A</span>
+        </button>
+      </div>
+
       <button id="prev" class="nav" type="button" aria-label="Previous page">‹</button>
       <button id="next" class="nav" type="button" aria-label="Next page">›</button>
+
       <footer id="bar"><span id="label"></span><span id="pct"></span></footer>
+
+      <aside id="contents" class="panel" hidden aria-label="Contents and search">
+        <div class="panel-head">
+          <input type="search" placeholder="Search this book" aria-label="Search this book" />
+          <button class="panel-close" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="panel-note"></p>
+        <div class="panel-list"></div>
+      </aside>
+
+      <aside id="display" class="panel" hidden aria-label="Display settings"></aside>
+
+      <div id="footnote" hidden role="dialog" aria-label="Note">
+        <button class="panel-close" type="button" aria-label="Close note">×</button>
+        <div id="footnote-body"></div>
+      </div>
+
+      <div id="scrim" hidden></div>
     </section>
 
     <script type="module" src="/src/main.ts"></script>

@@ -3,6 +3,9 @@ import { renderShelf } from './library.ts'
 import { fetchBookFile, getBook, listBooks, rescan } from './api.ts'
 import { ProgressStore } from './store/progress.ts'
 import { deviceName } from './store/device.ts'
+import { ContentsPanel } from './panels/contents.ts'
+import { DisplayPanel } from './panels/display.ts'
+import { applyTheme, loadSettings, saveSettings, type Settings } from './settings.ts'
 
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!
 
@@ -12,13 +15,73 @@ const readerEl = $<HTMLElement>('#reader')
 const shelfEl = $<HTMLElement>('#shelf')
 const labelEl = $<HTMLElement>('#label')
 const pctEl = $<HTMLElement>('#pct')
+const chromeEl = $<HTMLElement>('#chrome')
+const scrimEl = $<HTMLElement>('#scrim')
+const footnoteEl = $<HTMLElement>('#footnote')
+const footnoteBody = $<HTMLElement>('#footnote-body')
 
 const setStatus = (text = '') => { statusEl.textContent = text }
+
+let settings = loadSettings()
+applyTheme(settings)
 
 let reader: Reader | undefined
 const progress = new ProgressStore()
 /** Guards against a slow book load finishing after the user has navigated on. */
 let loadToken = 0
+
+const contents = new ContentsPanel($('#contents'), target => {
+  reader?.goTo(target).catch(() => {})
+  if (isNarrow()) closePanels()
+})
+const display = new DisplayPanel($('#display'), settings, patch => {
+  settings = { ...settings, ...patch }
+  saveSettings(settings)
+  applyTheme(settings)
+  reader?.applySettings(settings)
+})
+
+const isNarrow = () => matchMedia('(max-width: 44rem)').matches
+
+function closePanels() {
+  contents.close()
+  display.close()
+  scrimEl.hidden = true
+}
+
+/** Everything that must not survive a change of book. */
+function closeOverlays() {
+  closePanels()
+  footnoteEl.hidden = true
+  footnoteBody.replaceChildren()
+}
+
+function openPanel(which: 'contents' | 'display') {
+  const target = which === 'contents' ? contents : display
+  const other = which === 'contents' ? display : contents
+  other.close()
+  if (target.isOpen) {
+    target.close()
+    scrimEl.hidden = true
+    return
+  }
+  target.open()
+  // On a phone the panel covers the page, so it needs a dismiss surface.
+  scrimEl.hidden = !isNarrow()
+}
+
+// --- reader chrome auto-hide -------------------------------------------------
+
+let idleTimer: ReturnType<typeof setTimeout>
+function wakeChrome() {
+  chromeEl.classList.add('awake')
+  clearTimeout(idleTimer)
+  idleTimer = setTimeout(() => {
+    if (!contents.isOpen && !display.isOpen) chromeEl.classList.remove('awake')
+  }, 2600)
+}
+
+// --- views -------------------------------------------------------------------
 
 function show(view: 'library' | 'reader') {
   libraryEl.hidden = view !== 'library'
@@ -28,6 +91,7 @@ function show(view: 'library' | 'reader') {
 async function showLibrary() {
   // Drop the open book so its iframe isn't retained while browsing the shelf.
   reader?.close()
+  closeOverlays()
   show('library')
   document.title = 'Library'
   setStatus()
@@ -41,6 +105,7 @@ async function showLibrary() {
 async function showBook(id: string) {
   const token = ++loadToken
   show('reader')
+  closeOverlays()
   labelEl.textContent = ''
   pctEl.textContent = ''
   setStatus('Loading…')
@@ -50,20 +115,24 @@ async function showBook(id: string) {
     const file = await fetchBookFile(book)
     if (token !== loadToken) return
 
-    reader ??= new Reader($('#view'))
-    reader.onRelocate(({ cfi, fraction, label }) => {
+    reader ??= new Reader($('#view'), showFootnote)
+    reader.onRelocate(({ cfi, fraction, label, tocHref }) => {
       // A late relocate from a book the user has already navigated away from
       // must not overwrite the new book's position.
       if (token !== loadToken) return
       labelEl.textContent = label
       pctEl.textContent = `${Math.round(fraction * 100)}%`
+      contents.setCurrent(tocHref)
       progress.record(id, cfi, fraction)
     })
 
-    await reader.open(file, { start: saved?.cfi })
+    await reader.open(file, settings, saved?.cfi)
     if (token !== loadToken) return
 
+    contents.attach(reader)
     document.title = book.title ?? book.filename
+    wakeChrome()
+
     if (saved) {
       const where = `${Math.round(saved.fraction * 100)}%`
       const who = saved.device && saved.device !== deviceName() ? ` from ${saved.device}` : ''
@@ -77,13 +146,35 @@ async function showBook(id: string) {
   }
 }
 
+// --- footnotes ---------------------------------------------------------------
+
+function showFootnote(view: HTMLElement) {
+  footnoteBody.replaceChildren(view)
+  footnoteEl.hidden = false
+}
+
+function closeFootnote() {
+  footnoteEl.hidden = true
+  footnoteBody.replaceChildren()
+}
+
+
+// --- routing -----------------------------------------------------------------
+
 function route() {
   const match = location.hash.match(/^#\/book\/([0-9a-f]{64})$/)
   if (match) showBook(match[1]!)
   else showLibrary()
 }
 
+// --- wiring ------------------------------------------------------------------
+
 $('#back').addEventListener('click', () => { location.hash = '#/' })
+$('#toc-btn').addEventListener('click', () => openPanel('contents'))
+$('#display-btn').addEventListener('click', () => openPanel('display'))
+scrimEl.addEventListener('click', closePanels)
+footnoteEl.querySelector('.panel-close')!.addEventListener('click', closeFootnote)
+$('#contents .panel-close').addEventListener('click', closePanels)
 
 $('#rescan').addEventListener('click', async () => {
   setStatus('Scanning…')
@@ -97,17 +188,45 @@ $('#rescan').addEventListener('click', async () => {
   }
 })
 
-document.addEventListener('keydown', e => {
-  if (readerEl.hidden) return
-  if (e.key === 'ArrowLeft' || e.key === 'PageUp') reader?.goLeft()
-  else if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') reader?.goRight()
-  else if (e.key === 'Escape') location.hash = '#/'
-  else return
-  e.preventDefault()
-})
-
 $('#prev').addEventListener('click', () => reader?.goLeft())
 $('#next').addEventListener('click', () => reader?.goRight())
+
+readerEl.addEventListener('pointermove', wakeChrome)
+readerEl.addEventListener('pointerdown', wakeChrome)
+
+document.addEventListener('keydown', e => {
+  if (readerEl.hidden) return
+  const typing = (e.target as HTMLElement)?.tagName === 'INPUT'
+
+  if (e.key === 'Escape') {
+    if (!footnoteEl.hidden) closeFootnote()
+    else if (contents.isOpen || display.isOpen) closePanels()
+    else location.hash = '#/'
+  } else if (typing) {
+    return
+  } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+    reader?.goLeft()
+  } else if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+    reader?.goRight()
+  } else if (e.key === 't') {
+    openPanel('contents')
+  } else if (e.key === 'd') {
+    openPanel('display')
+  } else if (e.key === '/') {
+    if (!contents.isOpen) openPanel('contents')
+  } else {
+    return
+  }
+  e.preventDefault()
+  wakeChrome()
+})
+
+// The system theme can change while the app is open; 'auto' should follow it.
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (settings.theme !== 'auto') return
+  applyTheme(settings)
+  reader?.applySettings(settings)
+})
 
 // Position changes are debounced, so a tab closing mid-debounce would lose the
 // last page turn without this.
@@ -118,3 +237,5 @@ addEventListener('visibilitychange', () => {
 
 addEventListener('hashchange', route)
 route()
+
+export type { Settings }

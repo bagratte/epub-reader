@@ -188,7 +188,7 @@ back-navigation. CSP landed here rather than M4 — see below.
 Schema, endpoints, IndexedDB local-first store, restore on open, progress bars
 in the grid. *Close the laptop, open the phone, continue.*
 
-**M4 — Reading UX** (~2–3 days)
+**M4 — Reading UX** ✅
 TOC drawer, settings (font size/family/line height/margins, light/sepia/dark,
 paginated vs scrolled) persisted in localStorage, in-book search, footnote
 popovers.
@@ -209,9 +209,9 @@ HTTPS via `tailscale cert` (needed before offline).
 
 ## Implementation notes
 
-Status: **M0–M3 complete.** Five books scan with covers and metadata, the grid
-routes into the reader, the CSP is live, and reading position survives reloads
-and moves between devices.
+Status: **M0–M4 complete.** The reader is feature-complete for v1: library with
+covers, position sync, contents, search, typography and theme controls, and
+footnote popovers. What remains is offline (see Invariants) and anything new.
 
 Non-obvious things found while wiring foliate-js — all cost time to rediscover:
 
@@ -256,6 +256,25 @@ Non-obvious things found while wiring foliate-js — all cost time to rediscover
   late relocate from a book the user already navigated away from overwrites the
   new book's position.
 
+### M4 notes
+
+- **`FootnoteHandler` needs `before-render`, not just `render`.** The popover's
+  view is created *detached*, and a detached paginator never renders — so the
+  handler's promise never settles and the note silently never opens. foliate
+  fires `before-render` precisely so the host can attach it first. Listening
+  only to `render` looks correct and does nothing.
+- **No Project Gutenberg book carries `epub:type="noteref"`**, so footnotes
+  can't be tested with them at all. `fixtures/footnotes.epub` is a minimal
+  EPUB 3 built for it; see `fixtures/README.md`.
+- Contents and search share one drawer. They answer the same question — where
+  do I go — and splitting them would be two panels doing one job.
+- Themes live in `settings.ts` as one palette table that feeds both the app's
+  CSS custom properties and the CSS injected into the book's iframe, so a theme
+  cannot half-apply.
+- Test hooks: the book's iframe sits inside a **closed** shadow root, so it is
+  unreachable from page JS and absent from Playwright's a11y snapshot. Drive it
+  through `page.frames()` and find the `blob:` frame.
+
 ### Our own bugs worth remembering
 
 - `#reader { display: flex }` silently beat the UA's `[hidden] { display: none }`,
@@ -263,6 +282,12 @@ Non-obvious things found while wiring foliate-js — all cost time to rediscover
   `[hidden] { display: none !important }`.
 - Covers were served as `image/jpg`, which is not a media type. The extension
   map is reversed explicitly in `coverMediaType()`.
+- The footnote popover survived a change of book. Panel teardown is now one
+  `closeOverlays()` used by both view transitions, rather than each caller
+  remembering the list.
+- The contents drawer opened at chapter 1 while the reader was at chapter 41.
+  It scrolls the current entry into view on open — and only on open, or it
+  fights the user's own scrolling.
 
 ### Security
 
