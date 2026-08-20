@@ -1,0 +1,24 @@
+/** Shared between client and server. Keep it free of runtime imports. */
+
+export interface Book {
+  /** sha256 of file content. Never derive this from the path — see PLAN.md. */
+  id: string
+  filename: string
+  size: number
+  /** Populated in M2, once the OPF is parsed. */
+  title?: string
+  author?: string
+}
+
+export interface Progress {
+  bookId: string
+  /** EPUB CFI from foliate-js's `relocate` event. */
+  cfi: string
+  /** 0..1 through the whole book. */
+  fraction: number
+  /** Monotonic high-water mark. */
+  furthest: number
+  /** Server-assigned epoch ms. Device clocks are not trusted. */
+  updatedAt: number
+  device?: string
+}

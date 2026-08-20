@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Reader</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <div id="status">Loading…</div>
+      <foliate-view id="view"></foliate-view>
+    </main>
+    <button id="prev" class="nav" aria-label="Previous page">‹</button>
+    <button id="next" class="nav" aria-label="Next page">›</button>
+    <div id="footer"><span id="label"></span><span id="pct"></span></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
