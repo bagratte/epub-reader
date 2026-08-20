@@ -1,5 +1,5 @@
 import type { Progress } from '../../../shared/types.ts'
-import { getLocal, putLocal, type LocalProgress } from './local.ts'
+import { getLocal, pendingLocal, putLocal, type LocalProgress } from './local.ts'
 import { deviceName } from './device.ts'
 
 const PUSH_DELAY_MS = 1000
@@ -44,6 +44,7 @@ export class ProgressStore {
   #device = deviceName()
   #timer: ReturnType<typeof setTimeout> | undefined
   #dirty: LocalProgress | undefined
+  #draining = false
   /** Per-book high-water mark, seeded on load. The server is authoritative;
    *  this only keeps the value sane between pushes. */
   #furthest = new Map<string, number>()
@@ -87,15 +88,50 @@ export class ProgressStore {
     this.#timer = setTimeout(() => void this.#push(), PUSH_DELAY_MS)
   }
 
-  async #push() {
+  async #push(): Promise<boolean> {
     const record = this.#dirty
-    if (!record) return
+    if (!record) return false
     const accepted = await putRemote(record)
-    // Only clear the flag if nothing newer arrived while the request was out.
-    if (accepted && this.#dirty === record) {
-      this.#dirty = undefined
-      await putLocal({ ...accepted, pending: false })
+    if (!accepted) return false
+    // Only clear the handle if nothing newer arrived while the request was out.
+    if (this.#dirty === record) this.#dirty = undefined
+    await putLocal({ ...accepted, pending: false })
+    return true
+  }
+
+  /**
+   * Push everything written while the server was unreachable.
+   *
+   * Deliberately simple: a queued write applied late can clobber a newer write
+   * from another device. With one reader and a personal library that is a
+   * non-issue, and `furthest` — which the server only ever raises — means the
+   * high-water mark survives it regardless.
+   */
+  async drain(): Promise<number> {
+    if (this.#draining) return 0
+    this.#draining = true
+    try {
+      // Flush this session's own unacknowledged write first — it is both the
+      // freshest and, when reconnecting mid-book, the one that matters most.
+      // A successful push marks it not-pending, so the loop below won't
+      // resend it.
+      let sent = (await this.#push()) ? 1 : 0
+
+      for (const record of await pendingLocal()) {
+        const accepted = await putRemote(record)
+        if (!accepted) break // still unreachable — keep the rest queued
+        await putLocal({ ...accepted, pending: false })
+        sent++
+      }
+      return sent
+    } finally {
+      this.#draining = false
     }
+  }
+
+  /** Number of positions waiting to reach the server. */
+  pendingCount(): Promise<number> {
+    return pendingLocal().then(all => all.length)
   }
 
   /**

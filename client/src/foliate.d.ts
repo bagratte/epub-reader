@@ -1,3 +1,11 @@
+interface ImportMetaEnv {
+  readonly PROD: boolean
+  readonly DEV: boolean
+}
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
 /**
  * foliate-js ships no types. Rather than sprinkle @ts-expect-error, declare the
  * modules we import as untyped — `Reader` is the one place that touches them,

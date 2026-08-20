@@ -1,6 +1,8 @@
 import { Reader } from './reader.ts'
 import { renderShelf } from './library.ts'
-import { fetchBookFile, getBook, listBooks, rescan } from './api.ts'
+import { downloadForOffline, fetchBookFile, getBook, listBooks, rescan } from './api.ts'
+import { cachedIds, removeCached } from './store/books.ts'
+import { Connectivity, registerServiceWorker } from './offline.ts'
 import { ProgressStore } from './store/progress.ts'
 import { deviceName } from './store/device.ts'
 import { ContentsPanel } from './panels/contents.ts'
@@ -27,6 +29,7 @@ applyTheme(settings)
 
 let reader: Reader | undefined
 const progress = new ProgressStore()
+const net = new Connectivity()
 /** Guards against a slow book load finishing after the user has navigated on. */
 let loadToken = 0
 
@@ -88,6 +91,29 @@ function show(view: 'library' | 'reader') {
   readerEl.hidden = view !== 'reader'
 }
 
+async function paintShelf() {
+  const [books, cached] = await Promise.all([listBooks(), cachedIds()])
+  renderShelf(shelfEl, books, {
+    cached,
+    offline: !net.online,
+    onToggleOffline: async (book, wanted) => {
+      try {
+        if (!wanted) {
+          await removeCached(book.id)
+          return false
+        }
+        const ok = await downloadForOffline(book)
+        if (!ok) setStatus('Could not save — the browser refused the storage.')
+        return ok
+      } catch {
+        setStatus('Could not save. The server is unreachable.')
+        net.set(false)
+        return false
+      }
+    },
+  })
+}
+
 async function showLibrary() {
   // Drop the open book so its iframe isn't retained while browsing the shelf.
   reader?.close()
@@ -96,7 +122,8 @@ async function showLibrary() {
   document.title = 'Library'
   setStatus()
   try {
-    renderShelf(shelfEl, await listBooks())
+    await paintShelf()
+    if (!net.online) setStatus('Offline — only saved books can be opened.')
   } catch (err) {
     setStatus(`Could not load library: ${(err as Error).message}`)
   }
@@ -112,7 +139,9 @@ async function showBook(id: string) {
 
   try {
     const [book, saved] = await Promise.all([getBook(id), progress.load(id)])
-    const file = await fetchBookFile(book)
+    // Opening a book keeps it: the one you are reading is the one you most
+    // want on the train.
+    const file = await fetchBookFile(book, { cache: true })
     if (token !== loadToken) return
 
     reader ??= new Reader($('#view'), showFootnote)
@@ -133,7 +162,15 @@ async function showBook(id: string) {
     document.title = book.title ?? book.filename
     wakeChrome()
 
-    if (saved) {
+    if (!net.online) {
+      // No 'change' fires when you were already offline on arrival, so the
+      // reader would otherwise give no sign that syncing is deferred.
+      const queued = await progress.pendingCount()
+      setStatus(queued
+        ? `Offline — ${queued} position${queued === 1 ? '' : 's'} will sync later.`
+        : 'Offline — your place is being saved locally.')
+      setTimeout(() => { if (token === loadToken) setStatus() }, 3600)
+    } else if (saved) {
       const where = `${Math.round(saved.fraction * 100)}%`
       const who = saved.device && saved.device !== deviceName() ? ` from ${saved.device}` : ''
       setStatus(`Resumed at ${where}${who}`)
@@ -180,7 +217,7 @@ $('#rescan').addEventListener('click', async () => {
   setStatus('Scanning…')
   try {
     const result = await rescan()
-    renderShelf(shelfEl, await listBooks())
+    await paintShelf()
     const failed = result.failed.length ? `, ${result.failed.length} unreadable` : ''
     setStatus(`${result.added} added, ${result.updated} updated, ${result.removed} removed${failed}`)
   } catch (err) {
@@ -227,6 +264,25 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   applyTheme(settings)
   reader?.applySettings(settings)
 })
+
+// --- offline ----------------------------------------------------------------
+
+async function syncPending() {
+  const sent = await progress.drain()
+  if (sent) setStatus(`Synced ${sent} saved position${sent === 1 ? '' : 's'}`)
+  if (sent) setTimeout(() => setStatus(), 2600)
+}
+
+net.onChange(online => {
+  if (online) void syncPending()
+  else if (!readerEl.hidden) setStatus('Offline — your place is being saved locally.')
+})
+
+void registerServiceWorker()
+// Trust the server, not the interface: on a VPN the phone can have wifi and
+// still not reach home.
+void net.probe().then(online => { if (online) void syncPending() })
+addEventListener('online', () => void net.probe())
 
 // Position changes are debounced, so a tab closing mid-debounce would lose the
 // last page turn without this.

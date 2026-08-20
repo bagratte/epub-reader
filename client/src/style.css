@@ -78,7 +78,42 @@ html, body {
   gap: 2rem 1.5rem;
 }
 
-.book { display: flex; flex-direction: column; gap: 0.6rem; }
+.book { position: relative; display: flex; flex-direction: column; gap: 0.6rem; }
+
+/* Dimmed, not hidden: offline you should still see what the library holds,
+   and which of it you can actually open. */
+.book.unreachable a { opacity: 0.38; }
+
+.offline-toggle {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.book:hover .offline-toggle,
+.offline-toggle:focus-visible,
+.offline-toggle[aria-pressed='true'] { opacity: 1; }
+.offline-toggle[aria-pressed='true'] { color: var(--accent); }
+.offline-toggle:disabled { cursor: progress; }
+
+/* Touch has no hover, so the control has to be permanently visible there. */
+@media (hover: none) {
+  .offline-toggle { opacity: 1; }
+}
 
 .book a {
   display: block;

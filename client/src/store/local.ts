@@ -51,3 +51,7 @@ export const putLocal = (record: LocalProgress) =>
 
 export const allLocal = () =>
   tx<LocalProgress[]>('readonly', s => s.getAll()).catch(() => [] as LocalProgress[])
+
+/** Records written while the server was unreachable. */
+export const pendingLocal = () =>
+  allLocal().then(all => all.filter(r => r.pending))

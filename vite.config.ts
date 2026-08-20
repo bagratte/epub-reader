@@ -1,5 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 
@@ -22,9 +24,45 @@ const stubFoliatePdf = (): Plugin => ({
   },
 })
 
+/**
+ * Emits the service worker with its precache list filled in.
+ *
+ * Hand-rolled instead of vite-plugin-pwa/Workbox: the caching policy is three
+ * rules (see client/sw.js) and the only thing the SW cannot know by itself is
+ * the hashed asset names, which is exactly what this supplies.
+ */
+const emitServiceWorker = (): Plugin => ({
+  name: 'emit-service-worker',
+  apply: 'build',
+  generateBundle(_options, bundle) {
+    const assets = Object.keys(bundle).map(name => '/' + name)
+    const precache = [
+      '/',
+      '/index.html',
+      '/manifest.webmanifest',
+      '/icon-192.png',
+      '/icon-512.png',
+      '/apple-touch-icon.png',
+      ...assets.filter(name => !name.endsWith('.html')),
+    ]
+    // Derive the version from the content-hashed filenames, so an unchanged
+    // rebuild keeps the same cache and doesn't churn every client.
+    const version = createHash('sha256')
+      .update(precache.sort().join('\n'))
+      .digest('hex')
+      .slice(0, 12)
+
+    const source = readFileSync(root + 'client/sw.js', 'utf8')
+      .replace('self.__PRECACHE__', JSON.stringify(precache))
+      .replace('self.__VERSION__', JSON.stringify(version))
+
+    this.emitFile({ type: 'asset', fileName: 'sw.js', source })
+  },
+})
+
 export default defineConfig({
   root: 'client',
-  plugins: [stubFoliatePdf()],
+  plugins: [stubFoliatePdf(), emitServiceWorker()],
   build: {
     outDir: '../dist/client',
     emptyOutDir: true,
