@@ -1,5 +1,5 @@
 import type { Progress } from '../../../shared/types.ts'
-import { getLocal, pendingLocal, putLocal, type LocalProgress } from './local.ts'
+import { deleteLocal, getLocal, pendingLocal, putLocal, type LocalProgress } from './local.ts'
 import { deviceName } from './device.ts'
 
 const PUSH_DELAY_MS = 1000
@@ -15,9 +15,21 @@ async function getRemote(bookId: string): Promise<Progress | null> {
   }
 }
 
-async function putRemote(record: LocalProgress): Promise<Progress | null> {
+/**
+ * A rejected write and an unreachable server need different handling, so say
+ * which happened. A record the server will never accept — its book was removed
+ * from the library, say — must not sit at the head of the queue blocking every
+ * position behind it.
+ */
+type PutResult =
+  | { status: 'ok'; progress: Progress }
+  | { status: 'rejected' }   // server answered, and said no. Give up on it.
+  | { status: 'unreachable' } // try again later.
+
+async function putRemote(record: LocalProgress): Promise<PutResult> {
+  let res: Response
   try {
-    const res = await fetch(`/api/progress/${record.bookId}`, {
+    res = await fetch(`/api/progress/${record.bookId}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -26,10 +38,16 @@ async function putRemote(record: LocalProgress): Promise<Progress | null> {
         device: record.device,
       }),
     })
-    return res.ok ? await res.json() : null
   } catch {
-    return null
+    return { status: 'unreachable' }
   }
+
+  if (res.ok) return { status: 'ok', progress: await res.json() }
+  // 5xx and the timeout/rate-limit codes are worth retrying; other 4xx are not.
+  if (res.status >= 500 || res.status === 408 || res.status === 429) {
+    return { status: 'unreachable' }
+  }
+  return { status: 'rejected' }
 }
 
 /**
@@ -41,6 +59,15 @@ async function putRemote(record: LocalProgress): Promise<Progress | null> {
  * missing today is a retry loop over pending records.
  */
 export class ProgressStore {
+  /**
+   * Told whether the server answered. A failed write is the most reliable
+   * signal we get that the server is unreachable — more reliable than
+   * navigator.onLine, which only knows whether an interface is up. Wiring it
+   * back means a transient failure marks us offline, and recovering triggers
+   * the drain rather than leaving the record pending until the next real
+   * network transition.
+   */
+  onReachable?: (reachable: boolean) => void
   #device = deviceName()
   #timer: ReturnType<typeof setTimeout> | undefined
   #dirty: LocalProgress | undefined
@@ -91,11 +118,20 @@ export class ProgressStore {
   async #push(): Promise<boolean> {
     const record = this.#dirty
     if (!record) return false
-    const accepted = await putRemote(record)
-    if (!accepted) return false
+    const result = await putRemote(record)
+    this.onReachable?.(result.status !== 'unreachable')
+
+    if (result.status === 'rejected') {
+      // The book is gone from the library. Stop tracking a position in it.
+      if (this.#dirty === record) this.#dirty = undefined
+      await deleteLocal(record.bookId)
+      return false
+    }
+    if (result.status !== 'ok') return false
+
     // Only clear the handle if nothing newer arrived while the request was out.
     if (this.#dirty === record) this.#dirty = undefined
-    await putLocal({ ...accepted, pending: false })
+    await putLocal({ ...result.progress, pending: false })
     return true
   }
 
@@ -118,9 +154,17 @@ export class ProgressStore {
       let sent = (await this.#push()) ? 1 : 0
 
       for (const record of await pendingLocal()) {
-        const accepted = await putRemote(record)
-        if (!accepted) break // still unreachable — keep the rest queued
-        await putLocal({ ...accepted, pending: false })
+        const result = await putRemote(record)
+        this.onReachable?.(result.status !== 'unreachable')
+        // Unreachable means every later record will fail too — stop and keep
+        // them queued. A rejection is about this record alone, so drop it and
+        // carry on rather than letting it wedge the queue.
+        if (result.status === 'unreachable') break
+        if (result.status === 'rejected') {
+          await deleteLocal(record.bookId)
+          continue
+        }
+        await putLocal({ ...result.progress, pending: false })
         sent++
       }
       return sent

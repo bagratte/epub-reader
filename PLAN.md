@@ -323,6 +323,18 @@ Non-obvious things found while wiring foliate-js — all cost time to rediscover
 - The contents drawer opened at chapter 1 while the reader was at chapter 41.
   It scrolls the current entry into view on open — and only on open, or it
   fights the user's own scrolling.
+- **A removed book wedged the whole sync queue.** A position for a book that
+  had been taken out of `library/` was rejected 404 forever, and `drain()`
+  treated every failure as "server unreachable" and stopped — so one dead
+  record blocked every position behind it indefinitely. `putRemote` now
+  distinguishes *rejected* (the server answered and said no: drop the record
+  and carry on) from *unreachable* (stop; try later). Only found by running
+  the app with real leftover state — no test had a stale record in it.
+- **A write that failed while "online" was never retried.** Nothing told
+  `Connectivity` about it, so the record sat pending until the next real
+  network transition, which on a desktop may never come. A failed write now
+  marks us unreachable and a successful one marks us back, which is what the
+  note above about `navigator.onLine` always claimed to mean.
 - **The retry queue skipped the one record that needed it.** `drain()` treated
   the in-memory `#dirty` record as "in flight" and skipped its book — but
   `#dirty` is the last *unacknowledged* write, which after going offline is

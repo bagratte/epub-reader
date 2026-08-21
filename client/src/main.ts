@@ -30,6 +30,9 @@ applyTheme(settings)
 let reader: Reader | undefined
 const progress = new ProgressStore()
 const net = new Connectivity()
+// A failed write is the truest signal that the server is gone; a successful one
+// that it is back. Both matter more than the browser's interface state.
+progress.onReachable = reachable => net.set(reachable)
 /** Guards against a slow book load finishing after the user has navigated on. */
 let loadToken = 0
 
