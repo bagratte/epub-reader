@@ -304,6 +304,16 @@ foliate-view { flex: 1; min-width: 0; }
   color: var(--muted);
   pointer-events: none;
   z-index: 2;
+  /* Paginated flow leaves a vertical margin for this to sit in. Continuous
+     scroll has no such band — text runs right under the bar — so it needs to
+     carry its own ground, fading out rather than drawing a hard edge. */
+  background: linear-gradient(
+    to top,
+    var(--bg) 0%,
+    var(--bg) 55%,
+    color-mix(in srgb, var(--bg) 0%, transparent) 100%
+  );
+  padding-top: 1.1rem;
 }
 #label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

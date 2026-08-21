@@ -26,7 +26,7 @@ export interface Settings {
 
 export const DEFAULTS: Settings = {
   theme: 'auto',
-  flow: 'paginated',
+  flow: 'scrolled',
   font: 'default',
   fontSize: 100,
   lineHeight: 1.5,

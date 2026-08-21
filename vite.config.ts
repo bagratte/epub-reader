@@ -25,6 +25,35 @@ const stubFoliatePdf = (): Plugin => ({
 })
 
 /**
+ * Lets <foliate-view> use a renderer other than the paginator.
+ *
+ * view.js hard-codes `document.createElement('foliate-paginator')` and appends
+ * it into a *closed* shadow root, so the choice cannot be overridden from
+ * outside — the element is unreachable. One line of rewriting turns it into an
+ * attribute, which is what selects the continuous-scroll renderer.
+ *
+ * Throwing when the pattern is missing is deliberate: a submodule bump that
+ * moves this line should fail the build rather than silently drop the feature.
+ */
+const pluggableRenderer = (): Plugin => ({
+  name: 'foliate-pluggable-renderer',
+  enforce: 'pre',
+  transform(code, id) {
+    if (!id.replace(/\\/g, '/').endsWith('foliate-js/view.js')) return
+    const from = "this.renderer = document.createElement('foliate-paginator')"
+    const to = "this.renderer = document.createElement("
+      + "this.getAttribute('renderer') || 'foliate-paginator')"
+    if (!code.includes(from)) {
+      throw new Error(
+        'foliate-js view.js no longer contains the renderer line this plugin '
+        + 'rewrites. Check vendor/foliate-js/view.js and update the pattern.',
+      )
+    }
+    return { code: code.replace(from, to), map: null }
+  },
+})
+
+/**
  * Emits the service worker with its precache list filled in.
  *
  * Hand-rolled instead of vite-plugin-pwa/Workbox: the caching policy is three
@@ -62,7 +91,7 @@ const emitServiceWorker = (): Plugin => ({
 
 export default defineConfig({
   root: 'client',
-  plugins: [stubFoliatePdf(), emitServiceWorker()],
+  plugins: [stubFoliatePdf(), pluggableRenderer(), emitServiceWorker()],
   build: {
     outDir: '../dist/client',
     emptyOutDir: true,

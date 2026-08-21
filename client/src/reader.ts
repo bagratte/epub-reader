@@ -1,4 +1,8 @@
 import '../../vendor/foliate-js/view.js'
+// Registers <foliate-continuous>. The `renderer` attribute set below selects
+// it; see the pluggableRenderer plugin in vite.config.ts for how view.js is
+// taught to honour that attribute at all.
+import './continuous.ts'
 import { FootnoteHandler } from '../../vendor/foliate-js/footnotes.js'
 import { contentCSS, type Settings } from './settings.ts'
 
@@ -46,12 +50,17 @@ export class Reader {
   /** foliate's close() is not idempotent — Paginator.destroy() nulls its own
    *  view and then dereferences it on a second call. Track state ourselves. */
   #opened = false
+  /** Kept so a change of flow can re-open the book with the other renderer. */
+  #file?: File
+  #continuous = false
+  #lastCfi?: string
 
   constructor(element: Element, onFootnote: (view: HTMLElement) => void) {
     this.#view = element
 
     this.#view.addEventListener('relocate', (e: CustomEvent) => {
       const { cfi, fraction, tocItem } = e.detail
+      this.#lastCfi = cfi
       this.#onRelocate?.({
         cfi, fraction,
         label: tocItem?.label ?? '',
@@ -87,6 +96,13 @@ export class Reader {
     // book. close() is foliate's own teardown; it just never calls it itself.
     this.close()
 
+    this.#file = file
+    // The renderer is created inside view.open(), so the choice has to be made
+    // before it — foliate reads this attribute once and never again.
+    this.#continuous = settings.flow === 'scrolled'
+    if (this.#continuous) this.#view.setAttribute('renderer', 'foliate-continuous')
+    else this.#view.removeAttribute('renderer')
+
     await this.#view.open(file)
     this.#opened = true
     this.applySettings(settings)
@@ -104,13 +120,26 @@ export class Reader {
         // start rather than showing nothing.
       }
     }
-    this.#view.renderer.next()
+    // The paginator renders nothing until told to; the continuous renderer
+    // starts itself at section 0, and a next() here would scroll off it.
+    if (!this.#continuous) this.#view.renderer.next()
   }
 
-  /** Safe to call while a book is open; foliate re-renders in place. */
+  /**
+   * Safe to call while a book is open; foliate re-renders in place — except
+   * for a change of flow, which changes which renderer is needed. view.js
+   * picks that once, in open(), so the book has to be re-opened. The CFI puts
+   * the reader back where they were.
+   */
   applySettings(settings: Settings) {
     const renderer = this.#view.renderer
     if (!renderer) return
+
+    if (this.#opened && (settings.flow === 'scrolled') !== this.#continuous) {
+      void this.#swapRenderer(settings)
+      return
+    }
+
     renderer.setAttribute('flow', settings.flow)
     renderer.setAttribute('margin', `${settings.margin}px`)
     // `margin` is vertical only — `gap` is what moves the left and right edges.
@@ -127,6 +156,18 @@ export class Reader {
       settings.flow === 'scrolled' ? `${UNCAPPED_MEASURE}px` : `${MEASURE_PX}px`,
     )
     renderer.setStyles?.(contentCSS(settings))
+  }
+
+  async #swapRenderer(settings: Settings) {
+    const file = this.#file
+    if (!file) return
+    try {
+      await this.open(file, settings, this.#lastCfi)
+    } catch {
+      // Nothing useful to do here — the book is already loaded once, and a
+      // failure leaves the previous renderer torn down. Surfacing it would
+      // need a channel this class does not have.
+    }
   }
 
   onRelocate(fn: (r: Relocation) => void) {

@@ -148,6 +148,60 @@ network-first with a cache fallback** — cache-first leaves the page one build
 behind until a second reload, which once cost hours because a test silently ran
 the previous bundle and looked like a code bug.
 
+### Continuous scroll is our own renderer
+
+`client/src/continuous.ts` (`<foliate-continuous>`) replaces the paginator in
+scrolled flow. foliate's paginator holds **one section at a time** in either
+flow, so scrolling stops dead at a chapter boundary and only `next()`/`prev()`
+crosses it.
+
+The decision that makes this cheap: **each section keeps its own document.**
+`view.js` builds the CFI from `{ index, range }` — a section index plus a Range
+inside that section's own document — so one-document-per-section means CFIs,
+the TOC, search, footnotes and progress all keep working untouched. Merging the
+book into a single document would have broken every one of them.
+
+The rest is a virtualised list: every section gets a slot, only sections within
+`KEEP_SCREENS` of the viewport hold a live iframe, and a slot's estimated
+height (bytes × a self-calibrating ratio) is replaced by its measured height
+the first time it renders.
+
+`view.js` hard-codes `foliate-paginator` and appends into a **closed** shadow
+root, so the renderer cannot be swapped from outside. The `pluggableRenderer`
+plugin in `vite.config.ts` rewrites that one line into an attribute read. It
+throws if the pattern is missing, so a submodule bump fails the build rather
+than silently losing the feature.
+
+Changing flow **re-opens the book**, because `view.js` chooses the renderer
+once, inside `open()`. `Reader` keeps the `File` and the last CFI to do it
+invisibly.
+
+Things that cost time here, all of them non-obvious:
+
+- **Inserting an iframe fires a `load` for its initial `about:blank`.** Taking
+  that event means styling and measuring a blank document; the real one then
+  arrives unstyled with height 0 — a blank screen with a correct-looking
+  progress bar. Set `src` before insertion and ignore `about:blank` loads.
+- **The renderer must size itself.** foliate-view's shadow root carries no
+  stylesheet. Without `:host { height: 100% }` the host collapses to zero.
+- **`renderer.open()` is called before the element is appended**, so anything
+  needing layout is measuring a detached, zero-sized tree. This is what made an
+  `IntersectionObserver` unusable for windowing — it silently stopped
+  reporting. Windowing now compares scroll offsets directly, which is
+  deterministic and cheap.
+- **Never auto-navigate in `open()`.** The caller restores a saved CFI
+  immediately afterwards, and an internal `goTo(section 0)` races it and wins
+  often enough to dump the reader at the top of the book.
+- **A navigation has to be re-applied while heights settle.** A slot's offset
+  is only as good as the estimates above it, so scrolling once lands a chapter
+  out; `#reapply()` re-pins the target on every measurement for
+  `ANCHOR_SETTLE_MS`.
+
+Worth knowing: **a failed restore silently overwrites the saved position**,
+because arriving at the top of the book relocates and the debounced write
+follows. That is not specific to this renderer, but it destroys the evidence
+whenever restore breaks — capture the CFI before reloading when testing it.
+
 ## foliate-js quirks
 
 `client/src/reader.ts` is the **only** file that touches foliate-js, and
