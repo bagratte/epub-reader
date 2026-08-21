@@ -11,7 +11,7 @@ import { requestPersistence } from './store/books.ts'
 export async function registerServiceWorker(): Promise<boolean> {
   if (!import.meta.env.PROD) return false
   // Service workers need a secure context. localhost counts; a plain-http LAN
-  // address does not — see PLAN.md → Invariants.
+  // address does not — see CLAUDE.md → Deployment.
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return false
   try {
     await navigator.serviceWorker.register('/sw.js', { scope: '/' })

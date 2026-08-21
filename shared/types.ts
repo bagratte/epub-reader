@@ -1,7 +1,7 @@
 /** Shared between client and server. Keep it free of runtime imports. */
 
 export interface Book {
-  /** sha256 of file content. Never derive this from the path — see PLAN.md. */
+  /** sha256 of file content. Never derive this from the path — see CLAUDE.md. */
   id: string
   filename: string
   size: number

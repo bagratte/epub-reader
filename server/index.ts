@@ -14,7 +14,7 @@ const COVER_DIR = join(CACHE_DIR, 'covers')
 const DB_FILE = process.env.DB_FILE ?? join(CACHE_DIR, 'library.db')
 const PORT = Number(process.env.PORT ?? 8787)
 // Loopback by default. In production set HOST to the VPN interface address —
-// never 0.0.0.0. See PLAN.md → Security.
+// never 0.0.0.0. See CLAUDE.md → Deployment.
 const HOST = process.env.HOST ?? '127.0.0.1'
 
 const app = Fastify({ logger: true })

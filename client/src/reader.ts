@@ -28,7 +28,7 @@ export interface SearchGroup {
 
 /**
  * Thin typed wrapper over <foliate-view>, which ships no types and has a few
- * sharp edges (see PLAN.md). Everything the app touches goes through here.
+ * sharp edges (see CLAUDE.md). Everything the app touches goes through here.
  */
 export class Reader {
   #view: any
