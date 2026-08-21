@@ -169,6 +169,17 @@ sharp edges:
 - **`FootnoteHandler` needs `before-render`, not just `render`.** The popover's
   view is created detached, and a detached paginator never renders — so the
   handler's promise never settles and the note silently never opens.
+- **`margin` is vertical only.** The paginator's `--_margin` feeds
+  `grid-template-rows` and nothing else. Horizontal space is `gap` — a
+  percentage that is both the outer left/right padding and the inter-column
+  gap, and which also becomes `padding: 0 Npx` in scrolled mode. Two separate
+  settings, `margin` and `gap`, for what the UI calls vertical and horizontal
+  margins.
+- **In scrolled mode `gap` is overruled by `max-inline-size`.** foliate caps
+  the text at 720px and centres it with `margin: auto`, so on a wide window
+  that cap — not `gap` — sets the side whitespace, and a horizontal-margin
+  control looks broken. `reader.ts` lifts the cap for scrolled flow only;
+  paginated keeps it, where it also decides how many columns fit.
 - **Use `goLeft()`/`goRight()` for spatial controls**, not `prev()`/`next()`;
   they swap correctly in RTL books.
 - `view.goTo(cfi)` works as the *first* navigation, so resuming skips

@@ -74,7 +74,7 @@ export class DisplayPanel {
     return row
   }
 
-  #stepper(label: string, key: 'fontSize' | 'lineHeight' | 'margin',
+  #stepper(label: string, key: 'fontSize' | 'lineHeight' | 'margin' | 'gap',
            step: number, min: number, max: number, suffix = '') {
     const row = document.createElement('div')
     row.className = 'setting'
@@ -121,7 +121,8 @@ export class DisplayPanel {
       ]),
       this.#stepper('Text size', 'fontSize', 10, 60, 240, '%'),
       this.#stepper('Line height', 'lineHeight', 0.1, 1.1, 2.4),
-      this.#stepper('Margins', 'margin', 8, 0, 160, 'px'),
+      this.#stepper('Vertical margins', 'margin', 8, 0, 160, 'px'),
+      this.#stepper('Horizontal margins', 'gap', 1, 2, 25, '%'),
       this.#group('Layout', 'flow', [['paginated', 'Pages'], ['scrolled', 'Scroll']]),
       this.#group('Columns', 'maxColumns', [['1', 'One'], ['2', 'Up to two']]),
       this.#group('Justify', 'justify', [['true', 'On'], ['false', 'Off']]),

@@ -9,8 +9,16 @@ export interface Settings {
   /** Percent of the browser's default body size. */
   fontSize: number
   lineHeight: number
-  /** Side margin in px, per side. */
+  /**
+   * Top and bottom margin in px. foliate's `margin` attribute feeds only the
+   * paginator's grid-template-rows, so it is vertical alone.
+   */
   margin: number
+  /**
+   * Left and right margin, as a percent of the view — foliate's `gap`, which
+   * is both the outer horizontal padding and the space between columns.
+   */
+  gap: number
   maxColumns: 1 | 2
   justify: boolean
   hyphenate: boolean
@@ -23,6 +31,7 @@ export const DEFAULTS: Settings = {
   fontSize: 100,
   lineHeight: 1.5,
   margin: 48,
+  gap: 6,
   maxColumns: 2,
   justify: true,
   hyphenate: true,

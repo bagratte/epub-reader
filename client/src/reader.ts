@@ -30,6 +30,15 @@ export interface SearchGroup {
  * Thin typed wrapper over <foliate-view>, which ships no types and has a few
  * sharp edges (see CLAUDE.md). Everything the app touches goes through here.
  */
+/**
+ * foliate's own default for `--_max-inline-size`: the widest a text column
+ * gets, and in paginated mode the divisor deciding how many columns fit.
+ */
+const MEASURE_PX = 720
+
+/** Large enough that the cap never binds, so `gap` alone sets the margins. */
+const UNCAPPED_MEASURE = 100_000
+
 export class Reader {
   #view: any
   #onRelocate?: (r: Relocation) => void
@@ -104,8 +113,19 @@ export class Reader {
     if (!renderer) return
     renderer.setAttribute('flow', settings.flow)
     renderer.setAttribute('margin', `${settings.margin}px`)
-    renderer.setAttribute('gap', '6%')
+    // `margin` is vertical only — `gap` is what moves the left and right edges.
+    renderer.setAttribute('gap', `${settings.gap}%`)
     renderer.setAttribute('max-column-count', String(settings.maxColumns))
+    // Scrolled mode otherwise caps the text at --_max-inline-size and centres
+    // it, so on a wide window that cap sets the side whitespace and `gap` is
+    // swallowed whole — the horizontal control appears to do nothing until the
+    // window is narrow enough that gap beats the cap. Lift it here so `gap`
+    // governs; paginated mode keeps it, where it also decides how many columns
+    // fit across the view.
+    renderer.setAttribute(
+      'max-inline-size',
+      settings.flow === 'scrolled' ? `${UNCAPPED_MEASURE}px` : `${MEASURE_PX}px`,
+    )
     renderer.setStyles?.(contentCSS(settings))
   }
 
