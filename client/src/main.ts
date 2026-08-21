@@ -81,8 +81,11 @@ function openPanel(which: 'contents' | 'display') {
     return
   }
   target.open()
-  // On a phone the panel covers the page, so it needs a dismiss surface.
-  scrimEl.hidden = !isNarrow()
+  // Every width gets the dismiss surface. Clicking the book cannot close a
+  // panel by itself: the book is an iframe in a closed shadow root, so its
+  // clicks never reach this document. The scrim is what makes "click outside"
+  // work at all, and it is transparent on wide screens.
+  scrimEl.hidden = false
 }
 
 // --- reader chrome auto-hide -------------------------------------------------

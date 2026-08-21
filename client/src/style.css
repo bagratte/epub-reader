@@ -309,11 +309,19 @@ foliate-view { flex: 1; min-width: 0; }
 
 /* ---------- panels ---------- */
 
+/* Present whenever a panel is, on every width — it is the only way to catch a
+   click on the book, which lives in an iframe inside a closed shadow root and
+   never reports its clicks to this document. Transparent on a laptop, where a
+   side panel does not warrant dimming the page; on a phone the panel covers
+   the text, so the dimming is what says the page behind is inert. */
 #scrim {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--fg) 28%, transparent);
+  background: transparent;
   z-index: 5;
+}
+@media (max-width: 44rem) {
+  #scrim { background: color-mix(in srgb, var(--fg) 28%, transparent); }
 }
 
 .panel {
