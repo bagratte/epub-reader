@@ -20,8 +20,14 @@
     <section id="library" hidden>
       <header>
         <h1>Library</h1>
-        <button id="rescan" type="button">Rescan</button>
+        <div class="actions">
+          <button id="add" type="button">Add book</button>
+          <button id="rescan" type="button">Rescan</button>
+        </div>
       </header>
+      <!-- Opened from the Add button. The only way in on a phone, where there
+           is nothing to drag from. -->
+      <input id="picker" type="file" accept=".epub,application/epub+zip" multiple hidden />
       <ul id="shelf"></ul>
     </section>
 

@@ -1,6 +1,8 @@
 import { Reader } from './reader.ts'
 import { renderShelf } from './library.ts'
-import { downloadForOffline, fetchBookFile, getBook, listBooks, rescan } from './api.ts'
+import {
+  deleteBook, downloadForOffline, fetchBookFile, getBook, listBooks, rescan, uploadBook,
+} from './api.ts'
 import { cachedIds, removeCached } from './store/books.ts'
 import { Connectivity, registerServiceWorker } from './offline.ts'
 import { ProgressStore } from './store/progress.ts'
@@ -21,8 +23,15 @@ const chromeEl = $<HTMLElement>('#chrome')
 const scrimEl = $<HTMLElement>('#scrim')
 const footnoteEl = $<HTMLElement>('#footnote')
 const footnoteBody = $<HTMLElement>('#footnote-body')
+const pickerEl = $<HTMLInputElement>('#picker')
 
 const setStatus = (text = '') => { statusEl.textContent = text }
+
+/** A status line that clears itself, unless something else has replaced it. */
+function flashStatus(text: string, ms = 4000) {
+  setStatus(text)
+  setTimeout(() => { if (statusEl.textContent === text) setStatus() }, ms)
+}
 
 let settings = loadSettings()
 applyTheme(settings)
@@ -114,7 +123,75 @@ async function paintShelf() {
         return false
       }
     },
+    onDelete: async book => {
+      const result = await deleteBook(book.id)
+      if (result.status === 'unreachable') {
+        net.set(false)
+        setStatus('Could not remove — the server is unreachable.')
+        return false
+      }
+      if (result.status === 'rejected') {
+        setStatus(`Could not remove: ${result.message}`)
+        return false
+      }
+      net.set(true)
+      // The file is gone, so nothing derived from it should outlive it.
+      await Promise.all([removeCached(book.id), progress.forget(book.id)])
+      await paintShelf()
+      flashStatus(`Removed ${book.title ?? book.filename}`)
+      return true
+    },
   })
+}
+
+/**
+ * Upload chosen files, then repaint. Sequential on purpose: a phone on a VPN
+ * gains nothing from three 20 MB POSTs at once, and one clear "3 of 5" beats
+ * five overlapping ones.
+ */
+async function addBooks(files: File[]) {
+  const epubs = files.filter(f =>
+    /\.epub$/i.test(f.name) || f.type === 'application/epub+zip')
+  if (!epubs.length) return flashStatus('Only .epub files can be added.')
+
+  let added = 0
+  let duplicate = 0
+  let unreachable = false
+  const rejected: string[] = []
+
+  for (const [i, file] of epubs.entries()) {
+    setStatus(epubs.length > 1
+      ? `Adding ${i + 1} of ${epubs.length}…`
+      : `Adding ${file.name}…`)
+
+    const result = await uploadBook(file)
+    if (result.status === 'unreachable') {
+      // Every later upload would fail the same way; stop and say so once.
+      unreachable = true
+      break
+    }
+    net.set(true)
+    if (result.status === 'rejected') rejected.push(`${file.name}: ${result.message}`)
+    else if (result.status === 'duplicate') duplicate++
+    else added++
+  }
+
+  // Repaint regardless: some may have landed before the server went away.
+  await paintShelf().catch(() => {})
+
+  if (unreachable) {
+    net.set(false)
+    return setStatus('Could not add — the server is unreachable.')
+  }
+
+  const parts: string[] = []
+  if (added) parts.push(`${added} added`)
+  if (duplicate) parts.push(`${duplicate} already in the library`)
+  if (rejected.length === 1) parts.push(rejected[0]!)
+  else if (rejected.length) parts.push(`${rejected.length} rejected — see the console`)
+  if (rejected.length) console.warn('rejected uploads:', rejected)
+
+  flashStatus(parts.join(', '), rejected.length ? 8000 : 4000)
 }
 
 async function showLibrary() {
@@ -215,6 +292,49 @@ $('#display-btn').addEventListener('click', () => openPanel('display'))
 scrimEl.addEventListener('click', closePanels)
 footnoteEl.querySelector('.panel-close')!.addEventListener('click', closeFootnote)
 $('#contents .panel-close').addEventListener('click', closePanels)
+
+$('#add').addEventListener('click', () => pickerEl.click())
+
+pickerEl.addEventListener('change', () => {
+  const files = [...pickerEl.files ?? []]
+  // Clear first: re-picking the same file fires no change event otherwise.
+  pickerEl.value = ''
+  if (files.length) void addBooks(files)
+})
+
+// Drop onto the shelf — the control anyone reaches for on a laptop. dragover
+// has to be cancelled or the browser navigates to the file instead.
+let dragDepth = 0
+const draggingFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false
+
+libraryEl.addEventListener('dragenter', e => {
+  if (!draggingFiles(e)) return
+  dragDepth++
+  libraryEl.classList.add('dropping')
+})
+libraryEl.addEventListener('dragover', e => {
+  if (!draggingFiles(e)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
+})
+libraryEl.addEventListener('dragleave', () => {
+  // dragleave fires for every child crossed, so count rather than clear.
+  if (--dragDepth <= 0) {
+    dragDepth = 0
+    libraryEl.classList.remove('dropping')
+  }
+})
+libraryEl.addEventListener('drop', e => {
+  if (!e.dataTransfer?.files.length) return
+  e.preventDefault()
+  dragDepth = 0
+  libraryEl.classList.remove('dropping')
+  void addBooks([...e.dataTransfer.files])
+})
+
+// Anywhere else, a dropped file must not navigate the tab away from the app.
+addEventListener('dragover', e => e.preventDefault())
+addEventListener('drop', e => e.preventDefault())
 
 $('#rescan').addEventListener('click', async () => {
   setStatus('Scanning…')

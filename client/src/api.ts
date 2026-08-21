@@ -77,3 +77,62 @@ export async function downloadForOffline(book: Book): Promise<boolean> {
   if (!res.ok) throw new Error(`download: ${res.status}`)
   return putCached(book.id, await res.blob())
 }
+
+/**
+ * Adding and removing mirror putRemote's three-way answer rather than a plain
+ * throw: "the server said no" and "there is no server" call for different
+ * words on screen, and only the second means we have gone offline.
+ */
+export type UploadResult =
+  | { status: 'added' | 'duplicate'; book: Book }
+  | { status: 'rejected'; message: string }
+  | { status: 'unreachable' }
+
+/** The server's `{ error }` body, if it sent one. */
+async function reason(res: Response): Promise<string> {
+  try {
+    const body = await res.json() as { error?: string; message?: string }
+    return body.error ?? body.message ?? `HTTP ${res.status}`
+  } catch {
+    return `HTTP ${res.status}`
+  }
+}
+
+/**
+ * Sent as a raw body — the filename rides in the query string, since it is the
+ * only other thing the server needs and multipart would buy nothing.
+ * content-type is set explicitly because File.type is empty on some platforms.
+ */
+export async function uploadBook(file: File): Promise<UploadResult> {
+  let res: Response
+  try {
+    res = await fetch(`/api/books?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/epub+zip' },
+      body: file,
+    })
+  } catch {
+    return { status: 'unreachable' }
+  }
+
+  if (!res.ok) return { status: 'rejected', message: await reason(res) }
+  // 201 created it; 200 means these bytes were already here under some name.
+  return { status: res.status === 201 ? 'added' : 'duplicate', book: await res.json() as Book }
+}
+
+export type DeleteResult =
+  | { status: 'ok' }
+  | { status: 'rejected'; message: string }
+  | { status: 'unreachable' }
+
+export async function deleteBook(id: string): Promise<DeleteResult> {
+  let res: Response
+  try {
+    res = await fetch(`/api/books/${id}`, { method: 'DELETE' })
+  } catch {
+    return { status: 'unreachable' }
+  }
+  // 404 means it is already gone, which is what the caller wanted.
+  if (res.ok || res.status === 404) return { status: 'ok' }
+  return { status: 'rejected', message: await reason(res) }
+}

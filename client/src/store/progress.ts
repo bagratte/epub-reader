@@ -173,6 +173,20 @@ export class ProgressStore {
     }
   }
 
+  /**
+   * Forget a book entirely — used when it is deleted from the library. Clears
+   * the debounced write too, or a pending flush would recreate the record for
+   * a book that no longer exists.
+   */
+  async forget(bookId: string) {
+    if (this.#dirty?.bookId === bookId) {
+      clearTimeout(this.#timer)
+      this.#dirty = undefined
+    }
+    this.#furthest.delete(bookId)
+    await deleteLocal(bookId)
+  }
+
   /** Number of positions waiting to reach the server. */
   pendingCount(): Promise<number> {
     return pendingLocal().then(all => all.length)

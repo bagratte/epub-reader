@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { openDb, type BookRow, type ProgressRow } from './db.ts'
-import { scanLibrary } from './library.ts'
+import { addBook, InvalidBookError, removeBook, scanLibrary } from './library.ts'
 import type { Book, Progress } from '../shared/types.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -19,6 +19,22 @@ const HOST = process.env.HOST ?? '127.0.0.1'
 
 const app = Fastify({ logger: true })
 const db = openDb(DB_FILE)
+
+/**
+ * Uploads arrive as a raw body rather than multipart: there is no second form
+ * field to justify the dependency, and the whole file has to be in memory
+ * anyway because both the content hash and the OPF parse need all of it.
+ *
+ * The cap is generous — an image-heavy book can run to tens of megabytes —
+ * but finite, so a stray POST cannot exhaust the server.
+ */
+const MAX_UPLOAD = 256 * 1024 * 1024
+
+app.addContentTypeParser(
+  'application/epub+zip',
+  { parseAs: 'buffer', bodyLimit: MAX_UPLOAD },
+  (_req, body, done) => { done(null, body) },
+)
 
 /**
  * foliate-js renders book content in an iframe with both allow-scripts and
@@ -182,6 +198,33 @@ app.put<{ Params: { id: string }; Body: { cfi: string; fraction: number; device?
     return toProgress(row)
   },
 )
+
+app.post<{ Querystring: { name?: string }; Body: Buffer }>(
+  '/api/books',
+  { bodyLimit: MAX_UPLOAD },
+  async (req, reply) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return reply.code(400).send({ error: 'empty upload' })
+    }
+
+    try {
+      const { book, duplicate } = await addBook(
+        db, LIBRARY_DIR, COVER_DIR, req.body, req.query.name ?? 'book.epub')
+      // 200 for a duplicate, 201 for a new file: the client says "already in
+      // your library" rather than claiming to have added it twice.
+      return reply.code(duplicate ? 200 : 201).send(toBook(bookById(book.id)!))
+    } catch (err) {
+      if (!(err instanceof InvalidBookError)) throw err
+      req.log.warn({ err: err.message, name: req.query.name }, 'upload rejected')
+      return reply.code(400).send({ error: `Not a readable EPUB: ${err.message}` })
+    }
+  },
+)
+
+app.delete<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
+  const removed = await removeBook(db, LIBRARY_DIR, COVER_DIR, req.params.id)
+  return removed ? reply.code(204).send() : reply.code(404).send({ error: 'not found' })
+})
 
 app.post('/api/library/scan', async () => scanLibrary(db, LIBRARY_DIR, COVER_DIR))
 

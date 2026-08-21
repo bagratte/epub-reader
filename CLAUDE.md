@@ -80,6 +80,34 @@ different bytes, **nothing cached ever needs revalidating**. Never derive an id
 from a path — reorganising the library would orphan every cached book and
 progress row.
 
+### Adding and removing books
+
+Books arrive two ways and must end up indistinguishable: dropped into
+`library/` by hand and picked up by a scan, or uploaded from the browser.
+`addBook()` shares the scan's metadata path deliberately so the two cannot
+drift.
+
+`POST /api/books` takes the file as a **raw body** with the filename in
+`?name=`, not multipart — there is no second form field to justify the
+dependency, and the whole file has to be buffered anyway because both the
+SHA-256 and the OPF parse need all of it. `MAX_UPLOAD` caps it at 256 MB.
+
+Because the id is the content hash, re-uploading the same bytes is a no-op
+returning the book already stored: **200 means duplicate, 201 means created**,
+which is the only thing separating them at the API.
+
+An uploaded filename is untrusted input that becomes a path. `safeName()`
+reduces it to a bare basename — no directories, no traversal, always `.epub` —
+and `freeName()` resolves collisions with `-2`, `-3`, checking the disk as well
+as the table, because a file the scan has not seen yet is still a file.
+
+`DELETE /api/books/:id` unlinks the file **before** dropping the row. The other
+order looks safer and is not: if the unlink fails, the next scan re-adds the
+book, and it returns with its progress already cascaded away. On the client,
+deleting also clears the OPFS copy and the local progress record — including
+the debounced in-flight write, or a pending flush would recreate a position for
+a book that no longer exists.
+
 ### Reading position is local-first
 
 The client writes IndexedDB on every relocate and marks the record `pending`;
@@ -208,3 +236,7 @@ every cached book and queued position.
 Still open: annotations/highlights (a mergeable set — a CRDT would earn its
 place there), and profiles if more than one person reads (one migration:
 `progress` PK becomes `(profile_id, book_id)`).
+
+Also open, smaller: a book removed on one device leaves its OPFS copy orphaned
+on every other one. Deleting through the UI cleans up locally, but nothing
+reconciles OPFS against a shelf that lost a book elsewhere.

@@ -57,7 +57,9 @@ html, body {
 }
 #library h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; }
 
-#rescan {
+#library header .actions { display: flex; gap: 0.5rem; }
+
+#library header button {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: transparent;
@@ -66,8 +68,20 @@ html, body {
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
+  white-space: nowrap;
 }
-#rescan:hover { color: var(--fg); border-color: var(--muted); }
+#library header button:hover { color: var(--fg); border-color: var(--muted); }
+
+#add { color: var(--fg); border-color: var(--muted); }
+#add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Whole-library drop target: the shelf can be empty, and an outline drawn only
+   around the grid would be invisible in exactly that case. */
+#library.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -0.75rem;
+  border-radius: 0.5rem;
+}
 
 #shelf {
   list-style: none;
@@ -110,9 +124,37 @@ html, body {
 .offline-toggle[aria-pressed='true'] { color: var(--accent); }
 .offline-toggle:disabled { cursor: progress; }
 
-/* Touch has no hover, so the control has to be permanently visible there. */
+/* Shares the offline toggle's geometry, opposite corner. Destructive, so it
+   stays hidden until the card is hovered and never lights up like the accent
+   colour does for saving. */
+.delete-btn {
+  position: absolute;
+  top: 0.3rem;
+  left: 0.3rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.book:hover .delete-btn,
+.delete-btn:focus-visible { opacity: 1; }
+.delete-btn:hover { color: #c0392b; }
+.delete-btn:disabled { cursor: progress; }
+
+/* Touch has no hover, so the controls have to be permanently visible there. */
 @media (hover: none) {
-  .offline-toggle { opacity: 1; }
+  .offline-toggle, .delete-btn { opacity: 1; }
 }
 
 .book a {
@@ -183,7 +225,7 @@ html, body {
 .book .author { font-size: 0.75rem; color: var(--muted); }
 
 #shelf:empty::after {
-  content: 'No books. Drop an .epub into library/ and press Rescan.';
+  content: 'No books yet. Add one, or drop an .epub here.';
   color: var(--muted);
   font-size: 0.85rem;
 }

@@ -25,6 +25,17 @@ export interface ScanResult {
 const sha256 = (bytes: Uint8Array) =>
   createHash('sha256').update(bytes).digest('hex')
 
+/** Write an extracted cover into the cache dir; returns its filename. */
+async function writeCover(
+  coverDir: string,
+  id: string,
+  cover: { mediaType: string; data: Uint8Array },
+): Promise<string> {
+  const path = `${id}.${EXT_BY_MEDIA_TYPE[cover.mediaType] ?? 'bin'}`
+  await writeFile(join(coverDir, path), cover.data)
+  return path
+}
+
 /**
  * Reconcile the database against the library directory.
  *
@@ -71,12 +82,7 @@ export async function scanLibrary(
       const id = sha256(bytes)
       const meta = readEpubMeta(bytes)
 
-      let coverPath: string | null = null
-      if (meta.cover) {
-        const ext = EXT_BY_MEDIA_TYPE[meta.cover.mediaType] ?? 'bin'
-        coverPath = `${id}.${ext}`
-        await writeFile(join(coverDir, coverPath), meta.cover.data)
-      }
+      const coverPath = meta.cover ? await writeCover(coverDir, id, meta.cover) : null
 
       // The path is the natural key for a scan; the content hash is the id.
       // Replacing a file in place therefore changes the id, so clear any row
@@ -111,4 +117,142 @@ export async function scanLibrary(
   }
 
   return result
+}
+
+// --- single-book add and remove ---------------------------------------------
+
+/**
+ * Thrown when the uploaded bytes are not a book we can read. Distinct from any
+ * other failure so the route can answer 400 rather than 500 — a bad file is
+ * the client's problem, a full disk is ours.
+ */
+export class InvalidBookError extends Error {}
+
+/** Longest filename stem we keep. Filesystems cap around 255 bytes, and a
+ *  title used as a filename can run much longer than anyone wants to see. */
+const MAX_STEM = 120
+
+const trimEnds = (s: string) => s.replace(/^[.\s]+|[.\s]+$/g, '')
+
+/**
+ * An uploaded filename is untrusted input that becomes a path. Reduce it to a
+ * bare basename: no directories, no traversal, no leading dot, and always the
+ * .epub extension that scanLibrary filters on.
+ */
+export function safeName(raw: string): string {
+  const base = raw.split(/[/\\]/).pop() ?? ''
+  const stem = trimEnds(trimEnds(
+    base.replace(/\.epub$/i, '').replace(/[\x00-\x1f<>:"|?*]/g, '-'),
+  ).slice(0, MAX_STEM))
+  return `${stem || 'book'}.epub`
+}
+
+/** `name.epub`, else `name-2.epub`, and so on. */
+async function freeName(
+  db: DatabaseSync,
+  libraryDir: string,
+  name: string,
+): Promise<string> {
+  const stem = name.slice(0, -'.epub'.length)
+
+  for (let n = 1; n <= 999; n++) {
+    const candidate = n === 1 ? name : `${stem}-${n}.epub`
+    const claimed = db.prepare('SELECT 1 FROM books WHERE path = ?').get(candidate) != null
+    // Check the disk too: a file the scan has not seen yet is still a file we
+    // must not overwrite.
+    const onDisk = await stat(join(libraryDir, candidate)).then(() => true, () => false)
+    if (!claimed && !onDisk) return candidate
+  }
+  throw new InvalidBookError('too many books with that name')
+}
+
+export interface AddResult {
+  book: BookRow
+  /** These exact bytes were already in the library; nothing was written. */
+  duplicate: boolean
+}
+
+/**
+ * Ingest one uploaded EPUB, sharing the scan's metadata path so that a book
+ * added through the browser is indistinguishable from one dropped into the
+ * directory by hand.
+ */
+export async function addBook(
+  db: DatabaseSync,
+  libraryDir: string,
+  coverDir: string,
+  bytes: Uint8Array,
+  rawName: string,
+): Promise<AddResult> {
+  // 'PK' — an EPUB is a zip. Cheap rejection before unzipping megabytes.
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new InvalidBookError('not a zip archive')
+  }
+
+  const id = sha256(bytes)
+  // The id *is* the content hash, so an identical upload is a no-op — which is
+  // what re-adding the same book from a second device ought to be.
+  const existing = db.prepare('SELECT * FROM books WHERE id = ?')
+    .get(id) as unknown as BookRow | undefined
+  if (existing) return { book: existing, duplicate: true }
+
+  let meta
+  try {
+    meta = readEpubMeta(bytes)
+  } catch (err) {
+    // Nothing has been written yet, so a bad file leaves no trace.
+    throw new InvalidBookError((err as Error).message)
+  }
+
+  await mkdir(libraryDir, { recursive: true })
+  await mkdir(coverDir, { recursive: true })
+
+  const path = await freeName(db, libraryDir, safeName(rawName))
+  await writeFile(join(libraryDir, path), bytes)
+  const info = await stat(join(libraryDir, path))
+  const coverPath = meta.cover ? await writeCover(coverDir, id, meta.cover) : null
+
+  db.prepare(`
+    INSERT INTO books
+      (id, path, size, mtime, title, author, language, identifier, cover_path, added_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, path, info.size, Math.floor(info.mtimeMs),
+    meta.title ?? null, meta.author ?? null,
+    meta.language ?? null, meta.identifier ?? null,
+    coverPath, Date.now(),
+  )
+
+  return {
+    book: db.prepare('SELECT * FROM books WHERE id = ?').get(id) as unknown as BookRow,
+    duplicate: false,
+  }
+}
+
+/**
+ * Remove a book and everything derived from it. The progress row follows via
+ * ON DELETE CASCADE.
+ */
+export async function removeBook(
+  db: DatabaseSync,
+  libraryDir: string,
+  coverDir: string,
+  id: string,
+): Promise<boolean> {
+  const row = db.prepare('SELECT * FROM books WHERE id = ?')
+    .get(id) as unknown as BookRow | undefined
+  if (!row) return false
+
+  // The file goes first. If it cannot be removed, the next scan would simply
+  // re-add it — so failing loudly beats a book that vanishes and comes back
+  // with its reading position cascaded away.
+  try {
+    await unlink(join(libraryDir, row.path))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+
+  db.prepare('DELETE FROM books WHERE id = ?').run(id)
+  if (row.cover_path) await unlink(join(coverDir, row.cover_path)).catch(() => {})
+  return true
 }

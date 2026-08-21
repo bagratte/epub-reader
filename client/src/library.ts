@@ -12,6 +12,8 @@ export interface ShelfOptions {
   onToggleOffline: (book: Book, wanted: boolean) => Promise<boolean>
   /** Books the server hasn't confirmed; shown but not openable-from-scratch. */
   offline: boolean
+  /** Remove the book from the library. Resolves true if it actually went. */
+  onDelete: (book: Book) => Promise<boolean>
 }
 
 function cover(book: Book): HTMLElement {
@@ -71,6 +73,38 @@ function offlineToggle(book: Book, options: ShelfOptions): HTMLElement {
   return button
 }
 
+/**
+ * Deleting is not undoable and the control sits on a card the user was very
+ * likely aiming to open, so it asks first.
+ */
+function deleteButton(book: Book, options: ShelfOptions): HTMLElement {
+  const name = book.title ?? book.filename
+  const button = el('button', {
+    className: 'delete-btn',
+    type: 'button',
+    textContent: '\u00d7',
+    title: 'Remove from library',
+  })
+  button.setAttribute('aria-label', `Remove ${name} from the library`)
+
+  button.addEventListener('click', async e => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm(`Remove \u201c${name}\u201d from the library?\n\n`
+      + 'The file and your reading position are deleted from the server.')) return
+
+    button.disabled = true
+    button.textContent = '\u2026'
+    // On success the shelf is repainted from scratch, so only failure needs
+    // the button put back.
+    if (!await options.onDelete(book)) {
+      button.disabled = false
+      button.textContent = '\u00d7'
+    }
+  })
+  return button
+}
+
 export function renderShelf(shelf: HTMLElement, books: Book[], options: ShelfOptions) {
   shelf.replaceChildren(...books.map(book => {
     const readable = !options.offline || options.cached.has(book.id)
@@ -86,7 +120,7 @@ export function renderShelf(shelf: HTMLElement, books: Book[], options: ShelfOpt
 
     const item = el('li', { className: 'book' })
     item.classList.toggle('unreachable', !readable)
-    item.append(link, offlineToggle(book, options))
+    item.append(link, offlineToggle(book, options), deleteButton(book, options))
     return item
   }))
 }
