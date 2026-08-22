@@ -34,6 +34,7 @@ function flashStatus(text: string, ms = 4000) {
 
 let settings = loadSettings()
 applyTheme(settings)
+applyFlow(settings)
 
 let reader: Reader | undefined
 const progress = new ProgressStore()
@@ -52,8 +53,17 @@ const display = new DisplayPanel($('#display'), settings, patch => {
   settings = { ...settings, ...patch }
   saveSettings(settings)
   applyTheme(settings)
+  applyFlow(settings)
   reader?.applySettings(settings)
 })
+
+/**
+ * The page-turn handles only mean something when there are pages: in scrolled
+ * flow the whole book is one strip, so CSS keys off this to hide them.
+ */
+function applyFlow(settings: Settings) {
+  document.documentElement.dataset.flow = settings.flow
+}
 
 const isNarrow = () => matchMedia('(max-width: 44rem)').matches
 

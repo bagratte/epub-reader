@@ -263,6 +263,7 @@ foliate-view { flex: 1; min-width: 0; }
 .nav:hover, .nav:focus-visible { opacity: 1; }
 #prev { left: 0; }
 #next { right: 0; }
+:root[data-flow="scrolled"] .nav { display: none; }
 
 #bar {
   position: fixed;
