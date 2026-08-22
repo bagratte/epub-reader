@@ -1,0 +1,7 @@
+[Unit]
+Description=EPUB reader (dev mode: Vite + Fastify)
+Wants=epub-reader-backend.service epub-reader-frontend.service
+After=epub-reader-backend.service epub-reader-frontend.service
+
+[Install]
+WantedBy=default.target

@@ -381,24 +381,39 @@ every cached book and queued position.
 
 ### Running as a service
 
-`systemd/epub-reader.service` is a **user** unit, like the ones in `../notes`.
-Install it the same way:
+`systemd/` holds three **user** units, the same shape as `../notes`: a service
+per process and a target to group them. They run the app in **dev mode** —
+`tsx watch` for the API and the Vite dev server for the page — so edits on the
+box take effect without touching systemd.
 
 ```sh
-ln -s ~/src/epub-reader/systemd/epub-reader.service ~/.config/systemd/user/
+ln -s ~/src/epub-reader/systemd/epub-reader.target ~/.config/systemd/user/
+ln -s ~/src/epub-reader/systemd/epub-reader-backend.service ~/.config/systemd/user/
+ln -s ~/src/epub-reader/systemd/epub-reader-frontend.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now epub-reader
+systemctl --user enable --now epub-reader.target
 loginctl enable-linger bagrat    # so it runs on a headless box with nobody logged in
-journalctl --user -u epub-reader -f
+journalctl --user -u epub-reader-backend -f
 ```
 
-One unit, not a target with two services: in production Fastify serves the SPA
-and the API on a single port, so there is one process. It rebuilds the client
-in `ExecStartPre` — `dist/client` is what gets served, and a stale bundle is
-indistinguishable from a code bug.
+**The reader is reached at Vite's port, not Fastify's.** In dev Vite serves the
+page on 5180 and proxies `/api` to Fastify on 8787, so only the frontend unit
+needs to be reachable; the API stays on loopback behind that proxy. Vite binds
+`::1` by default, which is the box and nothing else, so reading on the phone
+means setting `VITE_HOST` in the frontend unit to the VPN interface address.
+It is written as `--host ${VITE_HOST}` precisely so the flag always has an
+argument: a bare `--host` is a wildcard bind, and there is no auth here.
 
-It takes the same port as `npm run dev` (8787), so stop one before starting
-the other, or give the service its own `PORT`.
+**Dev mode means no CSP and no service worker**, both being production-only.
+That is a deliberate trade for live-editing on the server, but it means the
+sandbox boundary around EPUB content is absent and nothing is available
+offline — so a phone with no route home has no library at all. To check either,
+run production by hand: `npm run build && NODE_ENV=production npm start`, which
+serves the built SPA and the API from the one port. The unit for that shape is
+in git history at commit b2b9576 if it is ever wanted back.
+
+They take the same ports as `npm run dev` (5180 and 8787), so stop the target
+before running that by hand.
 
 Backups are `library.db` and nothing else — genuinely nothing else, since
 there is no WAL — but it is now the size of the whole library, so a copy is a

@@ -1,0 +1,19 @@
+[Unit]
+Description=EPUB reader backend (Fastify, tsx watch)
+After=network.target
+PartOf=epub-reader.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bagrat/src/epub-reader
+
+# NODE_ENV is deliberately unset: this is dev mode, so Fastify serves only the
+# API and Vite serves the page. Nothing here binds a public interface — the
+# browser never talks to this port directly, Vite's /api proxy does, from
+# localhost. HOST and DATABASE_URL still come from .env, which the server reads
+# itself through process.loadEnvFile.
+ExecStart=/home/bagrat/src/epub-reader/node_modules/.bin/tsx watch server/index.ts
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
