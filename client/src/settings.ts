@@ -23,6 +23,14 @@ export interface Settings {
   justify: boolean
   hyphenate: boolean
   /**
+   * How far the text colour is carried toward the palette's foreground, dark
+   * theme only. 100 is the palette as written; lower mixes it back toward the
+   * page. Contrast is the only thing there is to adjust for a flat colour on a
+   * flat page, so there is no companion opacity here as there is for images —
+   * dimming and blending would be the same control twice.
+   */
+  textBrightness: number
+  /**
    * Image treatment, dark theme only — a white plate on a dark page is a
    * torch, and these three are the knobs for taming it. Percentages, so the
    * readout has something to show and the CSS can take them verbatim.
@@ -48,6 +56,7 @@ export const DEFAULTS: Settings = {
   maxColumns: 2,
   justify: true,
   hyphenate: true,
+  textBrightness: 100,
   imageBrightness: 75,
   imageOpacity: 90,
   invertImages: false,
@@ -129,12 +138,26 @@ export function applyTheme(settings: Settings) {
 export function contentCSS(settings: Settings): string {
   const theme = resolveTheme(settings.theme)
   const palette = PALETTES[theme]
+  /**
+   * Carries a colour back toward the page, or returns '' when there is nothing
+   * to do — only dark has glare to take off, and 100 is the palette as
+   * written. oklab because a mix down the sRGB line goes muddy in the middle.
+   */
+  const softened = (color: string) =>
+    theme === 'dark' && settings.textBrightness < 100
+      ? `color-mix(in oklab, ${color} ${settings.textBrightness}%, ${palette.bg})`
+      : ''
   const family = FONT_STACKS[settings.font]
   return `
     @namespace epub "http://www.idpf.org/2007/ops";
 
     html, body {
+      /* The softened colour is a second declaration rather than the only one:
+         a browser without color-mix drops it and keeps the plain one, where
+         dropping the only one would leave the book's own colour — often
+         near-black, on a near-black page. */
       color: ${palette.fg};
+      ${softened(palette.fg) && `color: ${softened(palette.fg)};`}
       background: ${palette.bg};
     }
     html {
@@ -154,6 +177,7 @@ export function contentCSS(settings: Settings): string {
     }` : ''}
 
     a:any-link { color: ${palette.accent}; }
+    ${softened(palette.accent) && `a:any-link { color: ${softened(palette.accent)}; }`}
 
     p, li, blockquote, dd {
       line-height: ${settings.lineHeight};

@@ -82,7 +82,7 @@ export class DisplayPanel {
 
   #stepper(label: string,
            key: 'fontSize' | 'lineHeight' | 'margin' | 'gap'
-              | 'imageBrightness' | 'imageOpacity',
+              | 'textBrightness' | 'imageBrightness' | 'imageOpacity',
            step: number, min: number, max: number, suffix = '') {
     const row = document.createElement('div')
     row.className = 'setting'
@@ -130,8 +130,9 @@ export class DisplayPanel {
       this.#group('Theme', 'theme', [
         ['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark'],
       ]),
-      this.#darkOnly(this.#stepper('Image brightness', 'imageBrightness', 5, 20, 100, '%')),
-      this.#darkOnly(this.#stepper('Image opacity', 'imageOpacity', 5, 20, 100, '%')),
+      this.#darkOnly(this.#stepper('Text brightness', 'textBrightness', 5, 0, 100, '%')),
+      this.#darkOnly(this.#stepper('Image brightness', 'imageBrightness', 5, 0, 100, '%')),
+      this.#darkOnly(this.#stepper('Image opacity', 'imageOpacity', 5, 0, 100, '%')),
       this.#darkOnly(this.#group('Invert images', 'invertImages',
         [['true', 'On'], ['false', 'Off']])),
       this.#group('Typeface', 'font', [
