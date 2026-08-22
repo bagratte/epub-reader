@@ -122,9 +122,19 @@ export function contentCSS(settings: Settings): string {
     }
     html {
       font-size: ${settings.fontSize}%;
-      ${family ? `font-family: ${family};` : ''}
     }
-    ${family ? `body, p, li, blockquote, dd, div { font-family: inherit; }` : ''}
+
+    /* A chosen face has to be !important, and has to reach every element.
+       Calibre and its kin put font-family on a class — .p, .calibre — which
+       outranks any element selector we can write, so the polite version of
+       this rule silently did nothing on most books.
+       'Book's own' injects none of it, which is what makes it a real third
+       choice rather than a synonym for Serif. */
+    ${family ? `
+    * { font-family: ${family} !important; }
+    pre, pre *, code, code *, kbd, samp, tt {
+      font-family: ui-monospace, monospace !important;
+    }` : ''}
 
     a:any-link { color: ${palette.accent}; }
 
