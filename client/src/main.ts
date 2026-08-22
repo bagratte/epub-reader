@@ -1,7 +1,7 @@
 import { Reader } from './reader.ts'
 import { renderShelf } from './library.ts'
 import {
-  deleteBook, downloadForOffline, fetchBookFile, getBook, listBooks, rescan, uploadBook,
+  deleteBook, downloadForOffline, fetchBookFile, getBook, listBooks, uploadBook,
 } from './api.ts'
 import { cachedIds, removeCached } from './store/books.ts'
 import { Connectivity, registerServiceWorker } from './offline.ts'
@@ -338,18 +338,6 @@ libraryEl.addEventListener('drop', e => {
 // Anywhere else, a dropped file must not navigate the tab away from the app.
 addEventListener('dragover', e => e.preventDefault())
 addEventListener('drop', e => e.preventDefault())
-
-$('#rescan').addEventListener('click', async () => {
-  setStatus('Scanning…')
-  try {
-    const result = await rescan()
-    await paintShelf()
-    const failed = result.failed.length ? `, ${result.failed.length} unreadable` : ''
-    setStatus(`${result.added} added, ${result.updated} updated, ${result.removed} removed${failed}`)
-  } catch (err) {
-    setStatus(`Scan failed: ${(err as Error).message}`)
-  }
-})
 
 $('#prev').addEventListener('click', () => reader?.goLeft())
 $('#next').addEventListener('click', () => reader?.goRight())

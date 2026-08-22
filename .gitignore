@@ -1,7 +1,6 @@
 node_modules/
 dist/
-library/
-*.db
-*.db-journal
-.cache/
 .playwright-mcp/
+.env
+*.swp
+*.db

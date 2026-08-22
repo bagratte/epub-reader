@@ -1,24 +1,17 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { createReadStream } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { openDb, type BookRow, type ProgressRow } from './db.ts'
-import { addBook, InvalidBookError, removeBook, scanLibrary } from './library.ts'
+import { DB_FILE, LEGACY_LIBRARY_DIR, ROOT } from './config.ts'
+import { bookColumns, openDb, type BookRow, type ProgressRow } from './db.ts'
+import { addBook, InvalidBookError, removeBook } from './library.ts'
 import type { Book, Progress } from '../shared/types.ts'
-
-const root = fileURLToPath(new URL('..', import.meta.url))
-const LIBRARY_DIR = process.env.LIBRARY_DIR ?? join(root, 'library')
-const CACHE_DIR = process.env.CACHE_DIR ?? join(root, '.cache')
-const COVER_DIR = join(CACHE_DIR, 'covers')
-const DB_FILE = process.env.DB_FILE ?? join(CACHE_DIR, 'library.db')
 const PORT = Number(process.env.PORT ?? 8787)
 // Loopback by default. In production set HOST to the VPN interface address —
 // never 0.0.0.0. See CLAUDE.md → Deployment.
 const HOST = process.env.HOST ?? '127.0.0.1'
 
 const app = Fastify({ logger: true })
-const db = openDb(DB_FILE)
+const db = openDb(DB_FILE, LEGACY_LIBRARY_DIR)
 
 /**
  * Uploads arrive as a raw body rather than multipart: there is no second form
@@ -66,13 +59,10 @@ app.addHook('onSend', async (_req, reply) => {
   reply.header('referrer-policy', 'no-referrer')
 })
 
-/** Reverse of the extension map in library.ts. 'jpg' is not a media type. */
-const COVER_MEDIA_TYPES: Record<string, string> = {
-  jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
-  webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif',
-}
-const coverMediaType = (file: string) =>
-  COVER_MEDIA_TYPES[file.split('.').pop() ?? ''] ?? 'application/octet-stream'
+/** node:sqlite hands back a Uint8Array; Fastify sends a Buffer as bytes and
+ *  anything else as JSON. Wrap the same memory rather than copying it. */
+const asBuffer = (bytes: Uint8Array) =>
+  Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 
 type BookWithProgress = BookRow & {
   fraction: number | null
@@ -82,12 +72,12 @@ type BookWithProgress = BookRow & {
 
 const toBook = (row: BookWithProgress): Book => ({
   id: row.id,
-  filename: row.path,
+  filename: row.filename,
   size: row.size,
   title: row.title ?? undefined,
   author: row.author ?? undefined,
   language: row.language ?? undefined,
-  hasCover: row.cover_path != null,
+  hasCover: row.cover_type != null,
   progress: row.progress_updated_at == null ? undefined : {
     fraction: row.fraction!,
     furthest: row.furthest!,
@@ -104,8 +94,10 @@ const toProgress = (row: ProgressRow): Progress => ({
   device: row.device ?? undefined,
 })
 
+// Explicitly not `b.*`: that would read every book's bytes to draw a shelf.
 const BOOK_SELECT = `
-  SELECT b.*, p.fraction, p.furthest, p.updated_at AS progress_updated_at
+  SELECT ${bookColumns('b.')},
+         p.fraction, p.furthest, p.updated_at AS progress_updated_at
   FROM books b LEFT JOIN progress p ON p.book_id = b.id
 `
 
@@ -115,7 +107,7 @@ const bookById = (id: string) =>
 app.get('/api/books', async () => {
   const rows = db.prepare(`
     ${BOOK_SELECT}
-    ORDER BY COALESCE(NULLIF(b.author, ''), 'zzz'), COALESCE(NULLIF(b.title, ''), b.path)
+    ORDER BY COALESCE(NULLIF(b.author, ''), 'zzz'), COALESCE(NULLIF(b.title, ''), b.filename)
   `).all() as unknown as BookWithProgress[]
   return rows.map(toBook)
 })
@@ -125,28 +117,39 @@ app.get<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
   return row ? toBook(row) : reply.code(404).send({ error: 'not found' })
 })
 
+/**
+ * node:sqlite has no incremental blob I/O, so the whole book is read at once
+ * and the read blocks the event loop — measured at ~3 ms for 9.5 MB, and a
+ * client fetches a given book once because the id is a content hash and the
+ * copy lands in OPFS.
+ */
 app.get<{ Params: { id: string } }>('/api/books/:id/file', async (req, reply) => {
-  const row = bookById(req.params.id)
+  const row = db.prepare('SELECT data FROM books WHERE id = ?')
+    .get(req.params.id) as unknown as { data: Uint8Array } | undefined
   if (!row) return reply.code(404).send({ error: 'not found' })
 
   return reply
     .type('application/epub+zip')
     // The id is the content hash, so it is a perfect strong ETag.
-    .header('etag', `"${row.id}"`)
+    .header('etag', `"${req.params.id}"`)
     .header('cache-control', 'private, max-age=0, must-revalidate')
-    .send(createReadStream(join(LIBRARY_DIR, row.path)))
+    .send(asBuffer(row.data))
 })
 
 app.get<{ Params: { id: string } }>('/api/books/:id/cover', async (req, reply) => {
-  const row = bookById(req.params.id)
-  if (!row?.cover_path) return reply.code(404).send({ error: 'no cover' })
+  const row = db.prepare('SELECT cover, cover_type FROM books WHERE id = ?')
+    .get(req.params.id) as unknown as
+      { cover: Uint8Array | null; cover_type: string | null } | undefined
+  if (!row?.cover) return reply.code(404).send({ error: 'no cover' })
 
   return reply
-    .type(coverMediaType(row.cover_path))
-    .header('etag', `"${row.id}-cover"`)
+    // Stored when the cover was extracted, so there is no extension to map
+    // back to a media type — which is where 'image/jpg' used to come from.
+    .type(row.cover_type ?? 'application/octet-stream')
+    .header('etag', `"${req.params.id}-cover"`)
     // Covers are keyed by content hash, so they can never go stale.
     .header('cache-control', 'private, max-age=31536000, immutable')
-    .send(createReadStream(join(COVER_DIR, row.cover_path)))
+    .send(asBuffer(row.cover))
 })
 
 app.get<{ Params: { id: string } }>('/api/progress/:id', async (req, reply) => {
@@ -208,8 +211,7 @@ app.post<{ Querystring: { name?: string }; Body: Buffer }>(
     }
 
     try {
-      const { book, duplicate } = await addBook(
-        db, LIBRARY_DIR, COVER_DIR, req.body, req.query.name ?? 'book.epub')
+      const { book, duplicate } = addBook(db, req.body, req.query.name ?? 'book.epub')
       // 200 for a duplicate, 201 for a new file: the client says "already in
       // your library" rather than claiming to have added it twice.
       return reply.code(duplicate ? 200 : 201).send(toBook(bookById(book.id)!))
@@ -222,24 +224,23 @@ app.post<{ Querystring: { name?: string }; Body: Buffer }>(
 )
 
 app.delete<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
-  const removed = await removeBook(db, LIBRARY_DIR, COVER_DIR, req.params.id)
+  const removed = removeBook(db, req.params.id)
   return removed ? reply.code(204).send() : reply.code(404).send({ error: 'not found' })
 })
-
-app.post('/api/library/scan', async () => scanLibrary(db, LIBRARY_DIR, COVER_DIR))
 
 // In dev, Vite serves the client and proxies /api here. In production we serve
 // the built SPA ourselves.
 if (process.env.NODE_ENV === 'production') {
-  await app.register(fastifyStatic, { root: join(root, 'dist/client') })
+  await app.register(fastifyStatic, { root: join(ROOT, 'dist/client') })
   app.setNotFoundHandler((req, reply) =>
     req.url.startsWith('/api/')
       ? reply.code(404).send({ error: 'not found' })
       : reply.sendFile('index.html'))
 }
 
-const scan = await scanLibrary(db, LIBRARY_DIR, COVER_DIR)
-app.log.info({ ...scan, dir: LIBRARY_DIR }, 'library scanned')
-for (const f of scan.failed) app.log.warn(f, 'could not read book')
+const [stats] = db.prepare(
+  'SELECT COUNT(*) AS books, COALESCE(SUM(size), 0) AS bytes FROM books',
+).all() as { books: number; bytes: number }[]
+app.log.info({ ...stats, db: DB_FILE }, 'library opened')
 
 await app.listen({ port: PORT, host: HOST })

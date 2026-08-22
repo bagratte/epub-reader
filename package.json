@@ -12,6 +12,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "tsx server/index.ts",
+    "import": "tsx server/import.ts",
     "typecheck": "tsc --noEmit",
     "icons": "node scripts/make-icons.mjs"
   },

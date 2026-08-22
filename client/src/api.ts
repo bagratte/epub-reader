@@ -1,13 +1,6 @@
 import type { Book } from '../../shared/types.ts'
 import { getCached, putCached } from './store/books.ts'
 
-export interface ScanResult {
-  added: number
-  updated: number
-  removed: number
-  failed: { path: string; error: string }[]
-}
-
 /** Last good /api/books response, so the shelf renders without a server. */
 const SHELF_KEY = 'reader.shelf'
 
@@ -48,7 +41,6 @@ export async function getBook(id: string): Promise<Book> {
   }
 }
 
-export const rescan = () => json<ScanResult>('/api/library/scan', { method: 'POST' })
 export const coverUrl = (id: string) => `/api/books/${id}/cover`
 
 /**

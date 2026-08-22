@@ -21,13 +21,21 @@ npm run typecheck                # tsc --noEmit; the only static gate
 npm run build                    # Vite → dist/client, and emits sw.js
 NODE_ENV=production npm start    # Fastify serves the built SPA + API on one port
 npm run icons                    # regenerate PWA icons into client/public/
+npm run import -- <file|dir>...  # bulk-add EPUBs from the shell
 ```
 
 Vite binds `::1` only, so use `http://localhost:5180`, not `127.0.0.1`.
 Port 8080 is taken by Syncthing on the dev machine, hence 8787.
 Node 24 here does not strip TypeScript despite the version, hence `tsx`.
 
-Server env vars: `PORT`, `HOST`, `LIBRARY_DIR`, `CACHE_DIR`, `DB_FILE`.
+Server env vars live in `.env` (gitignored; copy `.env.example`), loaded by
+`process.loadEnvFile` in `server/config.ts` — no dependency, and missing is
+fine. `DATABASE_URL` is the library file, a path relative to the repo root and
+`library.db` by default; `PORT` and `HOST` are the rest. `LIBRARY_DIR`
+survives for one purpose only — see *Everything lives in the database* below.
+
+`DATABASE_URL` names a path, not a URL, for consistency with the other apps
+here; a `sqlite:///` or `file:` prefix is stripped if one shows up.
 
 ### Dev mode is not production
 
@@ -60,7 +68,7 @@ third-party republish — do not use it. epub.js was rejected: no release since
 2023.
 
 ```
-server/   Fastify · node:sqlite · scans library/, parses OPF, serves files
+server/   Fastify · node:sqlite · parses OPF, stores and serves books
 shared/   types.ts imported by BOTH sides — the contract
 client/   Vite + vanilla TS; no framework (foliate-view is a web component)
 ```
@@ -68,42 +76,78 @@ client/   Vite + vanilla TS; no framework (foliate-view is a web component)
 Metadata is parsed **server-side** (`fflate` + a small OPF reader in
 `epub-meta.ts`) rather than with foliate-js, which needs a DOM. Parsing in the
 browser on first open would leave the library grid empty until every book had
-been opened once. Scanning caches by `(path, size, mtime)`, so a warm rescan
-re-hashes nothing.
+been opened once. It happens once per book, at ingest, and the result is a row.
+
+### Everything lives in the database
+
+There is no library directory and no cover cache: `library.db` in the repo root
+holds the EPUB bytes, the covers, the metadata and the reading positions. One
+file to back up, copy to another machine, or hand to `sqlite3`.
+
+What that bought, beyond the single file: ingest is one transaction instead of
+a file plus a row plus a cover file that can disagree; an uploaded filename is
+a label rather than a path, so traversal and name collisions stopped being
+questions rather than being defended against; and deleting a book is one
+`DELETE` instead of an unlink that had to be ordered just so.
+
+Consequences worth knowing:
+
+- **`node:sqlite` has no incremental blob I/O.** Serving a book reads the whole
+  thing into memory and blocks the event loop doing it — measured at ~3 ms for
+  9.5 MB, so a 100 MB book costs ~30 ms. Acceptable because the id is a content
+  hash: a device fetches a given book once and keeps it in OPFS.
+- **Never `SELECT *` or `b.*` from `books`.** That reads every book's bytes to
+  draw a shelf. `bookColumns()` in `db.ts` is the metadata-only column list;
+  the file and cover routes select their blob explicitly and nothing else does.
+- **Rollback journal, not WAL.** WAL keeps a `-wal` and a `-shm` next to the
+  database and only removes them on a clean close, which a killed server never
+  gets — three files for something whose whole point is being one file. The
+  rollback journal writes a `-journal` for the length of a transaction and
+  removes it on commit. The cost is that a writer locks out other *processes*
+  (the import CLI, a `sqlite3` session), so `openDb` sets a 5 s
+  `busy_timeout` to make them wait rather than fail. Inside the server there is
+  nothing to contend with: `node:sqlite` is synchronous, on one connection.
+- **The database is opened with `auto_vacuum = INCREMENTAL`**, and `removeBook`
+  runs `PRAGMA incremental_vacuum`, so deleting a book actually returns its
+  megabytes. INCREMENTAL rather than FULL: FULL relocates pages on every
+  commit, and the pages here are books.
+- Migrating an install from the old layout: move the database to the repo root
+  as `library.db` and leave `library/` in place for one start. The migration
+  in `db.ts` reads each row's file out of `LIBRARY_DIR` and into the row. A
+  book whose file is missing is dropped, because a row with no bytes is one
+  that can never be opened. After that start, `library/` and `.cache/` are
+  dead and can be deleted.
 
 ### Content-hash IDs are the spine
 
 A book's id is the SHA-256 of its file. That one decision explains a lot of the
 code: it is the DB primary key, a perfect strong ETag, the OPFS cache filename,
-the cover cache key, and the progress key. Because an id can never denote
-different bytes, **nothing cached ever needs revalidating**. Never derive an id
-from a path — reorganising the library would orphan every cached book and
-progress row.
+and the progress key. Because an id can never denote different bytes,
+**nothing cached ever needs revalidating**. It is also what makes re-adding a
+book idempotent, on any device, without a second thought.
 
 ### Adding and removing books
 
-Books arrive two ways and must end up indistinguishable: dropped into
-`library/` by hand and picked up by a scan, or uploaded from the browser.
-`addBook()` shares the scan's metadata path deliberately so the two cannot
-drift.
+`addBook()` is the only way a book gets in, whether it came from the upload
+route or from `npm run import`, so the two cannot drift.
 
 `POST /api/books` takes the file as a **raw body** with the filename in
 `?name=`, not multipart — there is no second form field to justify the
-dependency, and the whole file has to be buffered anyway because both the
-SHA-256 and the OPF parse need all of it. `MAX_UPLOAD` caps it at 256 MB.
+dependency, and the whole file has to be in memory anyway because the SHA-256,
+the OPF parse and the INSERT all need all of it. `MAX_UPLOAD` caps it at
+256 MB.
 
 Because the id is the content hash, re-uploading the same bytes is a no-op
 returning the book already stored: **200 means duplicate, 201 means created**,
 which is the only thing separating them at the API.
 
-An uploaded filename is untrusted input that becomes a path. `safeName()`
-reduces it to a bare basename — no directories, no traversal, always `.epub` —
-and `freeName()` resolves collisions with `-2`, `-3`, checking the disk as well
-as the table, because a file the scan has not seen yet is still a file.
+`safeName()` still trims an uploaded filename, but it is no longer a security
+boundary: the filename is a display name and a download name, never a path.
+Nothing enforces uniqueness on it either — two books may share a name, since
+the id is the key.
 
-`DELETE /api/books/:id` unlinks the file **before** dropping the row. The other
-order looks safer and is not: if the unlink fails, the next scan re-adds the
-book, and it returns with its progress already cascaded away. On the client,
+`DELETE /api/books/:id` is one statement; the progress row follows by
+`ON DELETE CASCADE` and the cover goes with the row it lives in. On the client,
 deleting also clears the OPFS copy and the local progress record — including
 the debounced in-flight write, or a pending flush would recreate a position for
 a book that no longer exists.
@@ -132,10 +176,11 @@ opened, which buries real failures.
 |---|---|
 | App shell, JS/CSS | Cache API, via the service worker |
 | Covers | Cache API, cache-first forever |
-| Book files | OPFS (`store/books.ts`) — large, user-evictable |
+| Book files (client copy) | OPFS (`store/books.ts`) — large, user-evictable |
 | Reading position | IndexedDB + retry queue |
 | Display settings | localStorage |
-| Library metadata | SQLite on the server; last response mirrored to localStorage |
+| Books, covers, metadata, positions | SQLite on the server — the one file |
+| Library listing | last `/api/books` response mirrored to localStorage |
 
 `navigator.onLine` is the wrong question on a VPN — it only knows whether an
 interface is up, and the phone can have wifi while home is unreachable. A failed
@@ -269,8 +314,8 @@ evaluates signed-distance fields into a pixel buffer and encodes PNG with
 
 ## Bugs worth remembering
 
-- **A removed book wedged the whole sync queue.** A position for a book taken
-  out of `library/` was rejected 404 forever, and `drain()` treated every
+- **A removed book wedged the whole sync queue.** A position for a book that
+  had been deleted was rejected 404 forever, and `drain()` treated every
   failure as "unreachable" and stopped, blocking every position behind it.
   `putRemote` now separates *rejected* (drop the record, carry on) from
   *unreachable* (stop, retry later).
@@ -282,8 +327,15 @@ evaluates signed-distance fields into a pixel buffer and encodes PNG with
   *unacknowledged* write, which is exactly what must be sent.
 - `#reader { display: flex }` silently beat the UA's `[hidden] { display: none }`.
   There is now a global `[hidden] { display: none !important }`.
-- Covers were served as `image/jpg`, which is not a media type; the extension
-  map is reversed explicitly in `coverMediaType()`.
+- Covers were served as `image/jpg`, which is not a media type. The media type
+  is now stored in `cover_type` at extraction, so there is no extension to map
+  back and the bug cannot recur.
+- **`node:sqlite` enables foreign keys by default**, unlike the SQLite CLI.
+  The blob migration rebuilds `books`, and `DROP TABLE` fires `ON DELETE
+  CASCADE` — so the first run silently took every reading position with it.
+  `openDb` now passes `enableForeignKeyConstraints: false` and turns the pragma
+  on after migrating; the pragma alone cannot do it, being a no-op inside the
+  migration's transaction.
 - The footnote popover survived a change of book. Teardown is now one
   `closeOverlays()` used by both view transitions.
 
@@ -297,6 +349,12 @@ HTTPS is **required** for anything that is not localhost: service workers need a
 secure context, so on a plain-http LAN address offline silently does nothing.
 Browser storage is also origin-scoped, so changing the hostname later orphans
 every cached book and queued position.
+
+Backups are `library.db` and nothing else — genuinely nothing else, since
+there is no WAL — but it is now the size of the whole library, so a copy is a
+full copy. `cp` is fine when the server is stopped or idle; to take one while
+it is being written to, use `sqlite3 library.db ".backup ..."` or
+`DatabaseSync.backup`, which are transaction-aware.
 
 Still open: annotations/highlights (a mergeable set — a CRDT would earn its
 place there), and profiles if more than one person reads (one migration:
