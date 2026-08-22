@@ -1,6 +1,7 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import { DB_FILE, LEGACY_LIBRARY_DIR, ROOT } from './config.ts'
 import { bookColumns, openDb, type BookRow, type ProgressRow } from './db.ts'
 import { addBook, InvalidBookError, removeBook } from './library.ts'
@@ -11,7 +12,29 @@ const PORT = Number(process.env.PORT ?? 8787)
 const HOST = process.env.HOST ?? '127.0.0.1'
 
 const app = Fastify({ logger: true })
-const db = openDb(DB_FILE, LEGACY_LIBRARY_DIR)
+
+/**
+ * One connection per request, opened by path and closed again — the reason is
+ * Syncthing, not concurrency.
+ *
+ * Syncthing applies a remote change by writing a temp file and renaming it
+ * over the target. A long-lived handle keeps pointing at the old, now-unlinked
+ * inode: the server would serve stale rows and write every new one into a file
+ * that no longer has a name. Reopening per request resolves the path again, so
+ * the window for that is a single request rather than an uptime.
+ *
+ * It costs ~0.07 ms, against ~3 ms to read one book's bytes. There is no
+ * concurrency to lose either: node:sqlite is synchronous, so a connection was
+ * never serving two requests at once.
+ */
+function withDb<T>(fn: (db: DatabaseSync) => T): T {
+  const db = openDb(DB_FILE, LEGACY_LIBRARY_DIR)
+  try {
+    return fn(db)
+  } finally {
+    db.close()
+  }
+}
 
 /**
  * Uploads arrive as a raw body rather than multipart: there is no second form
@@ -101,19 +124,19 @@ const BOOK_SELECT = `
   FROM books b LEFT JOIN progress p ON p.book_id = b.id
 `
 
-const bookById = (id: string) =>
+const bookById = (db: DatabaseSync, id: string) =>
   db.prepare(`${BOOK_SELECT} WHERE b.id = ?`).get(id) as unknown as BookWithProgress | undefined
 
-app.get('/api/books', async () => {
+app.get('/api/books', async () => withDb(db => {
   const rows = db.prepare(`
     ${BOOK_SELECT}
     ORDER BY COALESCE(NULLIF(b.author, ''), 'zzz'), COALESCE(NULLIF(b.title, ''), b.filename)
   `).all() as unknown as BookWithProgress[]
   return rows.map(toBook)
-})
+}))
 
 app.get<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
-  const row = bookById(req.params.id)
+  const row = withDb(db => bookById(db, req.params.id))
   return row ? toBook(row) : reply.code(404).send({ error: 'not found' })
 })
 
@@ -124,8 +147,10 @@ app.get<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
  * copy lands in OPFS.
  */
 app.get<{ Params: { id: string } }>('/api/books/:id/file', async (req, reply) => {
-  const row = db.prepare('SELECT data FROM books WHERE id = ?')
-    .get(req.params.id) as unknown as { data: Uint8Array } | undefined
+  // The bytes outlive the connection they came from: node:sqlite hands back a
+  // copy, not a view into SQLite's own memory.
+  const row = withDb(db => db.prepare('SELECT data FROM books WHERE id = ?')
+    .get(req.params.id)) as unknown as { data: Uint8Array } | undefined
   if (!row) return reply.code(404).send({ error: 'not found' })
 
   return reply
@@ -137,8 +162,8 @@ app.get<{ Params: { id: string } }>('/api/books/:id/file', async (req, reply) =>
 })
 
 app.get<{ Params: { id: string } }>('/api/books/:id/cover', async (req, reply) => {
-  const row = db.prepare('SELECT cover, cover_type FROM books WHERE id = ?')
-    .get(req.params.id) as unknown as
+  const row = withDb(db => db.prepare('SELECT cover, cover_type FROM books WHERE id = ?')
+    .get(req.params.id)) as unknown as
       { cover: Uint8Array | null; cover_type: string | null } | undefined
   if (!row?.cover) return reply.code(404).send({ error: 'no cover' })
 
@@ -153,8 +178,8 @@ app.get<{ Params: { id: string } }>('/api/books/:id/cover', async (req, reply) =
 })
 
 app.get<{ Params: { id: string } }>('/api/progress/:id', async (req, reply) => {
-  const row = db.prepare('SELECT * FROM progress WHERE book_id = ?')
-    .get(req.params.id) as unknown as ProgressRow | undefined
+  const row = withDb(db => db.prepare('SELECT * FROM progress WHERE book_id = ?')
+    .get(req.params.id)) as unknown as ProgressRow | undefined
   // 204 rather than 404: "never opened" is a normal answer, and a 404 paints a
   // red error in devtools every time an unread book is opened.
   return row ? toProgress(row) : reply.code(204).send()
@@ -177,28 +202,31 @@ app.put<{ Params: { id: string }; Body: { cfi: string; fraction: number; device?
     },
   },
   async (req, reply) => {
-    if (!bookById(req.params.id)) return reply.code(404).send({ error: 'no such book' })
-
     const { cfi, fraction, device } = req.body
     // updated_at is assigned here, never taken from the client — device clocks
     // drift and this timestamp is what ordering depends on.
     const updatedAt = Date.now()
 
-    db.prepare(`
-      INSERT INTO progress (book_id, cfi, fraction, furthest, updated_at, device)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(book_id) DO UPDATE SET
-        cfi = excluded.cfi,
-        fraction = excluded.fraction,
-        -- high-water mark only ever climbs
-        furthest = MAX(progress.furthest, excluded.fraction),
-        updated_at = excluded.updated_at,
-        device = excluded.device
-    `).run(req.params.id, cfi, fraction, fraction, updatedAt, device ?? null)
+    const row = withDb(db => {
+      if (!bookById(db, req.params.id)) return null
 
-    const row = db.prepare('SELECT * FROM progress WHERE book_id = ?')
-      .get(req.params.id) as unknown as ProgressRow
-    return toProgress(row)
+      db.prepare(`
+        INSERT INTO progress (book_id, cfi, fraction, furthest, updated_at, device)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(book_id) DO UPDATE SET
+          cfi = excluded.cfi,
+          fraction = excluded.fraction,
+          -- high-water mark only ever climbs
+          furthest = MAX(progress.furthest, excluded.fraction),
+          updated_at = excluded.updated_at,
+          device = excluded.device
+      `).run(req.params.id, cfi, fraction, fraction, updatedAt, device ?? null)
+
+      return db.prepare('SELECT * FROM progress WHERE book_id = ?')
+        .get(req.params.id) as unknown as ProgressRow
+    })
+
+    return row ? toProgress(row) : reply.code(404).send({ error: 'no such book' })
   },
 )
 
@@ -211,10 +239,13 @@ app.post<{ Querystring: { name?: string }; Body: Buffer }>(
     }
 
     try {
-      const { book, duplicate } = addBook(db, req.body, req.query.name ?? 'book.epub')
+      const { book, duplicate } = withDb(db => {
+        const result = addBook(db, req.body, req.query.name ?? 'book.epub')
+        return { ...result, book: bookById(db, result.book.id)! }
+      })
       // 200 for a duplicate, 201 for a new file: the client says "already in
       // your library" rather than claiming to have added it twice.
-      return reply.code(duplicate ? 200 : 201).send(toBook(bookById(book.id)!))
+      return reply.code(duplicate ? 200 : 201).send(toBook(book))
     } catch (err) {
       if (!(err instanceof InvalidBookError)) throw err
       req.log.warn({ err: err.message, name: req.query.name }, 'upload rejected')
@@ -224,7 +255,7 @@ app.post<{ Querystring: { name?: string }; Body: Buffer }>(
 )
 
 app.delete<{ Params: { id: string } }>('/api/books/:id', async (req, reply) => {
-  const removed = removeBook(db, req.params.id)
+  const removed = withDb(db => removeBook(db, req.params.id))
   return removed ? reply.code(204).send() : reply.code(404).send({ error: 'not found' })
 })
 
@@ -238,9 +269,11 @@ if (process.env.NODE_ENV === 'production') {
       : reply.sendFile('index.html'))
 }
 
-const [stats] = db.prepare(
+// Also the first open, so any pending migration runs before a request can
+// arrive rather than inside one.
+const [stats] = withDb(db => db.prepare(
   'SELECT COUNT(*) AS books, COALESCE(SUM(size), 0) AS bytes FROM books',
-).all() as { books: number; bytes: number }[]
+).all()) as { books: number; bytes: number }[]
 app.log.info({ ...stats, db: DB_FILE }, 'library opened')
 
 await app.listen({ port: PORT, host: HOST })

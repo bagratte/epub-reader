@@ -31,6 +31,9 @@ async function epubsAt(target: string): Promise<string[]> {
     .map(name => join(target, name))
 }
 
+// One connection for the whole run, unlike the server's per-request opens: a
+// batch of writes wants one, and a Syncthing swap mid-import would be a
+// conflict either way.
 const db = openDb(DB_FILE, LEGACY_LIBRARY_DIR)
 let added = 0, duplicate = 0, failed = 0
 

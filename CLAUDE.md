@@ -118,6 +118,35 @@ Consequences worth knowing:
   that can never be opened. After that start, `library/` and `.cache/` are
   dead and can be deleted.
 
+### The database file is synced, so connections are per request
+
+`library.db` lives in a Syncthing folder, which changes one thing about how the
+server holds it. Syncthing applies a remote change by writing a temp file and
+renaming it over the target. A long-lived handle would go on pointing at the
+old, now-unlinked inode: stale reads, and every write landing in a file with no
+name — silent, total loss of everything written after the swap. So `withDb()`
+in `index.ts` opens a connection per request and closes it, which resolves the
+path again each time. It costs ~0.07 ms against ~3 ms to read one book, and
+costs no concurrency: `node:sqlite` is synchronous, so a connection never
+served two requests at once anyway.
+
+That fixes the handle. It does not make the sync itself safe, and these are
+properties of Syncthing, not of anything the code can do:
+
+- **Only one instance may write.** Syncthing moves whole files and cannot merge
+  two SQLite databases. If two machines write, one version becomes a
+  `.sync-conflict-…` file and its changes are gone from the live database.
+- **A remote version replaces the local one wholesale**, rows and all. Nothing
+  is merged, so a stale peer that wins a race takes the library back in time.
+- **Ignore the journal.** `library.db-journal` exists only inside a write
+  transaction. A peer that receives one out of step with the database it
+  belongs to invites a rollback against the wrong file, so `*-journal` belongs
+  in `.stignore`.
+- **The whole library is one file.** A reading-position write dirties it every
+  second or so while you read, and Syncthing re-hashes a changed file to find
+  the blocks to send. Transfers stay small — the hashing does not, once the
+  library is gigabytes.
+
 ### Content-hash IDs are the spine
 
 A book's id is the SHA-256 of its file. That one decision explains a lot of the
