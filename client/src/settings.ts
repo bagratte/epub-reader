@@ -22,6 +22,19 @@ export interface Settings {
   maxColumns: 1 | 2
   justify: boolean
   hyphenate: boolean
+  /**
+   * Image treatment, dark theme only — a white plate on a dark page is a
+   * torch, and these three are the knobs for taming it. Percentages, so the
+   * readout has something to show and the CSS can take them verbatim.
+   */
+  imageBrightness: number
+  imageOpacity: number
+  /**
+   * Naive: every image, no questions asked. Right for a book of diagrams,
+   * wrong for a book of photographs, and nothing in CSS can tell them apart —
+   * so it is a choice the reader makes, not one we make for them.
+   */
+  invertImages: boolean
 }
 
 export const DEFAULTS: Settings = {
@@ -35,6 +48,9 @@ export const DEFAULTS: Settings = {
   maxColumns: 2,
   justify: true,
   hyphenate: true,
+  imageBrightness: 75,
+  imageOpacity: 90,
+  invertImages: false,
 }
 
 export interface Palette {
@@ -111,7 +127,8 @@ export function applyTheme(settings: Settings) {
 
 /** CSS injected into the book's document via foliate's `setStyles`. */
 export function contentCSS(settings: Settings): string {
-  const palette = PALETTES[resolveTheme(settings.theme)]
+  const theme = resolveTheme(settings.theme)
+  const palette = PALETTES[theme]
   const family = FONT_STACKS[settings.font]
   return `
     @namespace epub "http://www.idpf.org/2007/ops";
@@ -155,6 +172,18 @@ export function contentCSS(settings: Settings): string {
     [align="justify"] { text-align: justify; }
 
     pre { white-space: pre-wrap !important; }
+
+    /* Images, dark theme only. Brightness pulls the whole plate down; opacity
+       blends it toward the page behind it, so white falls toward this theme's
+       dark rather than toward a flat grey. Invert comes first in the filter
+       chain so the dimming applies to the inverted result — hue-rotate puts
+       the hues back, which matters for a coloured diagram and costs a
+       greyscale one nothing. */
+    ${theme === 'dark' ? `
+    img, svg, video {
+      filter: ${settings.invertImages ? 'invert(1) hue-rotate(180deg) ' : ''}brightness(${settings.imageBrightness}%);
+      opacity: ${settings.imageOpacity}%;
+    }` : ''}
 
     /* Footnotes are shown in a popover instead of interrupting the page. */
     aside[epub|type~="endnote"],

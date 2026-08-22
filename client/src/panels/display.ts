@@ -1,4 +1,4 @@
-import { DEFAULTS, type Settings } from '../settings.ts'
+import { DEFAULTS, resolveTheme, type Settings } from '../settings.ts'
 
 type Change = (patch: Partial<Settings>) => void
 
@@ -43,6 +43,12 @@ export class DisplayPanel {
         String(String(this.#settings[key]) === button.dataset.value),
       )
     }
+    // The image controls only do anything in dark, where a bright plate is a
+    // problem; showing them under a light theme would be three dead rows.
+    const dark = resolveTheme(this.#settings.theme) === 'dark'
+    for (const row of this.#root.querySelectorAll<HTMLElement>('[data-dark-only]')) {
+      row.hidden = !dark
+    }
     for (const out of this.#root.querySelectorAll<HTMLElement>('[data-readout]')) {
       const key = out.dataset.readout as keyof Settings
       out.textContent = out.dataset.suffix
@@ -74,7 +80,9 @@ export class DisplayPanel {
     return row
   }
 
-  #stepper(label: string, key: 'fontSize' | 'lineHeight' | 'margin' | 'gap',
+  #stepper(label: string,
+           key: 'fontSize' | 'lineHeight' | 'margin' | 'gap'
+              | 'imageBrightness' | 'imageOpacity',
            step: number, min: number, max: number, suffix = '') {
     const row = document.createElement('div')
     row.className = 'setting'
@@ -105,6 +113,12 @@ export class DisplayPanel {
     return row
   }
 
+  /** Marks a row for `#sync` to hide when the resolved theme is not dark. */
+  #darkOnly(row: HTMLElement) {
+    row.dataset.darkOnly = ''
+    return row
+  }
+
   #build() {
     const reset = document.createElement('button')
     reset.type = 'button'
@@ -116,6 +130,10 @@ export class DisplayPanel {
       this.#group('Theme', 'theme', [
         ['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark'],
       ]),
+      this.#darkOnly(this.#stepper('Image brightness', 'imageBrightness', 5, 20, 100, '%')),
+      this.#darkOnly(this.#stepper('Image opacity', 'imageOpacity', 5, 20, 100, '%')),
+      this.#darkOnly(this.#group('Invert images', 'invertImages',
+        [['true', 'On'], ['false', 'Off']])),
       this.#group('Typeface', 'font', [
         ['default', "Book's own"], ['serif', 'Serif'], ['sans', 'Sans'],
       ]),

@@ -387,6 +387,9 @@ document.addEventListener('keydown', e => {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (settings.theme !== 'auto') return
   applyTheme(settings)
+  // The panel's image controls show only under a dark theme, so a system
+  // flip while it is open has to reach it too.
+  display.update(settings)
   reader?.applySettings(settings)
 })
 
