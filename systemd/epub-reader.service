@@ -1,0 +1,35 @@
+[Unit]
+Description=EPUB reader (Fastify: SPA and API on one port)
+Documentation=file:///home/bagrat/src/epub-reader/CLAUDE.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bagrat/src/epub-reader
+
+# Production mode is not a preference here: the CSP and the service worker are
+# both production-only, so a dev-mode service would serve the reader without
+# its security boundary and without offline.
+Environment=NODE_ENV=production
+
+# No EnvironmentFile. The server reads the repo's .env itself, through
+# process.loadEnvFile in server/config.ts, so the file has one parser rather
+# than two that can disagree. Anything set here with Environment= still wins:
+# loadEnvFile leaves variables that are already set alone.
+
+# Rebuild before serving. dist/client is what production serves, and a stale
+# bundle looks exactly like a code bug — that has cost hours before. The build
+# takes under a second, and if it fails the service fails instead of quietly
+# serving the previous one.
+ExecStartPre=/home/bagrat/src/epub-reader/node_modules/.bin/vite build
+
+# The binary directly, not `npm start`: npm wraps it in a shell that gets in
+# the way of systemd's signals and process tracking.
+ExecStart=/home/bagrat/src/epub-reader/node_modules/.bin/tsx server/index.ts
+
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

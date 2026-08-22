@@ -379,6 +379,27 @@ secure context, so on a plain-http LAN address offline silently does nothing.
 Browser storage is also origin-scoped, so changing the hostname later orphans
 every cached book and queued position.
 
+### Running as a service
+
+`systemd/epub-reader.service` is a **user** unit, like the ones in `../notes`.
+Install it the same way:
+
+```sh
+ln -s ~/src/epub-reader/systemd/epub-reader.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now epub-reader
+loginctl enable-linger bagrat    # so it runs on a headless box with nobody logged in
+journalctl --user -u epub-reader -f
+```
+
+One unit, not a target with two services: in production Fastify serves the SPA
+and the API on a single port, so there is one process. It rebuilds the client
+in `ExecStartPre` — `dist/client` is what gets served, and a stale bundle is
+indistinguishable from a code bug.
+
+It takes the same port as `npm run dev` (8787), so stop one before starting
+the other, or give the service its own `PORT`.
+
 Backups are `library.db` and nothing else — genuinely nothing else, since
 there is no WAL — but it is now the size of the whole library, so a copy is a
 full copy. `cp` is fine when the server is stopped or idle; to take one while
