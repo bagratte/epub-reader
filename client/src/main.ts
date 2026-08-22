@@ -1,9 +1,8 @@
 import { Reader } from './reader.ts'
 import { renderShelf } from './library.ts'
 import {
-  deleteBook, downloadForOffline, fetchBookFile, getBook, listBooks, uploadBook,
+  deleteBook, fetchBookFile, getBook, listBooks, uploadBook,
 } from './api.ts'
-import { cachedIds, removeCached } from './store/books.ts'
 import { Connectivity, registerServiceWorker } from './offline.ts'
 import { ProgressStore } from './store/progress.ts'
 import { deviceName } from './store/device.ts'
@@ -107,25 +106,9 @@ function show(view: 'library' | 'reader') {
 }
 
 async function paintShelf() {
-  const [books, cached] = await Promise.all([listBooks(), cachedIds()])
+  const books = await listBooks()
   renderShelf(shelfEl, books, {
-    cached,
     offline: !net.online,
-    onToggleOffline: async (book, wanted) => {
-      try {
-        if (!wanted) {
-          await removeCached(book.id)
-          return false
-        }
-        const ok = await downloadForOffline(book)
-        if (!ok) setStatus('Could not save — the browser refused the storage.')
-        return ok
-      } catch {
-        setStatus('Could not save. The server is unreachable.')
-        net.set(false)
-        return false
-      }
-    },
     onDelete: async book => {
       const result = await deleteBook(book.id)
       if (result.status === 'unreachable') {
@@ -139,7 +122,7 @@ async function paintShelf() {
       }
       net.set(true)
       // The file is gone, so nothing derived from it should outlive it.
-      await Promise.all([removeCached(book.id), progress.forget(book.id)])
+      await progress.forget(book.id)
       await paintShelf()
       flashStatus(`Removed ${book.title ?? book.filename}`)
       return true
@@ -222,9 +205,7 @@ async function showBook(id: string) {
 
   try {
     const [book, saved] = await Promise.all([getBook(id), progress.load(id)])
-    // Opening a book keeps it: the one you are reading is the one you most
-    // want on the train.
-    const file = await fetchBookFile(book, { cache: true })
+    const file = await fetchBookFile(book)
     if (token !== loadToken) return
 
     reader ??= new Reader($('#view'), showFootnote)
@@ -393,8 +374,8 @@ net.onChange(online => {
 })
 
 void registerServiceWorker()
-// Trust the server, not the interface: on a VPN the phone can have wifi and
-// still not reach home.
+// Trust the backend, not the interface: this device's own service can be
+// stopped while its wifi is perfect.
 void net.probe().then(online => { if (online) void syncPending() })
 addEventListener('online', () => void net.probe())
 

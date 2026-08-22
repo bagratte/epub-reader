@@ -6,11 +6,8 @@ const el = <K extends keyof HTMLElementTagNameMap>(
 ) => Object.assign(document.createElement(tag), props)
 
 export interface ShelfOptions {
-  /** Ids held in OPFS, so the card can say whether the book is readable offline. */
-  cached: Set<string>
-  /** Toggle offline availability. Resolves to the new state. */
-  onToggleOffline: (book: Book, wanted: boolean) => Promise<boolean>
-  /** Books the server hasn't confirmed; shown but not openable-from-scratch. */
+  /** The backend is not answering: the shelf is from the last good response,
+   *  and nothing on it can be opened, since the bytes live behind it. */
   offline: boolean
   /** Remove the book from the library. Resolves true if it actually went. */
   onDelete: (book: Book) => Promise<boolean>
@@ -43,34 +40,6 @@ function progressBar(book: Book): HTMLElement | null {
   bar.style.setProperty('--pct', `${pct}%`)
   bar.title = `${pct}% read`
   return bar
-}
-
-function offlineToggle(book: Book, options: ShelfOptions): HTMLElement {
-  const isCached = options.cached.has(book.id)
-  const button = el('button', { className: 'offline-toggle', type: 'button' })
-  button.setAttribute('aria-pressed', String(isCached))
-
-  const label = (on: boolean) =>
-    on ? `${book.title ?? book.filename}: saved for offline`
-       : `${book.title ?? book.filename}: save for offline`
-  button.setAttribute('aria-label', label(isCached))
-  button.title = isCached ? 'Saved for offline. Click to remove.' : 'Save for offline'
-  button.textContent = isCached ? '✓' : '↓'
-
-  button.addEventListener('click', async e => {
-    e.preventDefault()
-    e.stopPropagation()
-    const wanted = button.getAttribute('aria-pressed') !== 'true'
-    button.disabled = true
-    button.textContent = '…'
-    const now = await options.onToggleOffline(book, wanted)
-    button.disabled = false
-    button.setAttribute('aria-pressed', String(now))
-    button.setAttribute('aria-label', label(now))
-    button.title = now ? 'Saved for offline. Click to remove.' : 'Save for offline'
-    button.textContent = now ? '✓' : '↓'
-  })
-  return button
 }
 
 /**
@@ -107,7 +76,6 @@ function deleteButton(book: Book, options: ShelfOptions): HTMLElement {
 
 export function renderShelf(shelf: HTMLElement, books: Book[], options: ShelfOptions) {
   shelf.replaceChildren(...books.map(book => {
-    const readable = !options.offline || options.cached.has(book.id)
 
     const link = el('a', { href: `#/book/${book.id}` })
     const art = el('div', { className: 'artwrap' })
@@ -119,8 +87,8 @@ export function renderShelf(shelf: HTMLElement, books: Book[], options: ShelfOpt
     if (book.author) link.append(el('div', { className: 'author', textContent: book.author }))
 
     const item = el('li', { className: 'book' })
-    item.classList.toggle('unreachable', !readable)
-    item.append(link, offlineToggle(book, options), deleteButton(book, options))
+    item.classList.toggle('unreachable', options.offline)
+    item.append(link, deleteButton(book, options))
     return item
   }))
 }

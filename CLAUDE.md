@@ -2,10 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-An in-browser EPUB reader served from a home server, reached from phone and
-laptop over a home VPN. No auth — the VPN is the perimeter. Feature-complete:
-library, reading position sync, contents, search, typography and themes,
-footnotes, and full offline.
+An in-browser EPUB reader that runs **entirely on each device** — its own
+server, its own copy of the library — with Syncthing replicating `library.db`
+between them. Nothing listens beyond loopback, so there is no perimeter to
+defend and no auth question to answer. Feature-complete: library, reading
+position sync, contents, search, typography and themes, footnotes, and full
+offline.
+
+It was a home server reached from phone and laptop over a VPN until 2026-08-22.
+Comments that talk about an unreachable server or a hostile network are from
+that shape; the reasoning usually still holds, because a local service that is
+not running looks the same to the client as a server that cannot be reached.
 
 Everything below was expensive to learn. Add to it when you find something the
 next session would otherwise rediscover.
@@ -95,7 +102,7 @@ Consequences worth knowing:
 - **`node:sqlite` has no incremental blob I/O.** Serving a book reads the whole
   thing into memory and blocks the event loop doing it — measured at ~3 ms for
   9.5 MB, so a 100 MB book costs ~30 ms. Acceptable because the id is a content
-  hash: a device fetches a given book once and keeps it in OPFS.
+  hash: nothing has to revalidate, and the read is a loopback hop away.
 - **Never `SELECT *` or `b.*` from `books`.** That reads every book's bytes to
   draw a shelf. `bookColumns()` in `db.ts` is the metadata-only column list;
   the file and cover routes select their blob explicitly and nothing else does.
@@ -150,8 +157,7 @@ properties of Syncthing, not of anything the code can do:
 ### Content-hash IDs are the spine
 
 A book's id is the SHA-256 of its file. That one decision explains a lot of the
-code: it is the DB primary key, a perfect strong ETag, the OPFS cache filename,
-and the progress key. Because an id can never denote different bytes,
+code: it is the DB primary key, a perfect strong ETag, and the progress key. Because an id can never denote different bytes,
 **nothing cached ever needs revalidating**. It is also what makes re-adding a
 book idempotent, on any device, without a second thought.
 
@@ -177,9 +183,9 @@ the id is the key.
 
 `DELETE /api/books/:id` is one statement; the progress row follows by
 `ON DELETE CASCADE` and the cover goes with the row it lives in. On the client,
-deleting also clears the OPFS copy and the local progress record — including
-the debounced in-flight write, or a pending flush would recreate a position for
-a book that no longer exists.
+deleting also clears the local progress record — including the debounced
+in-flight write, or a pending flush would recreate a position for a book that
+no longer exists.
 
 ### Reading position is local-first
 
@@ -205,14 +211,21 @@ opened, which buries real failures.
 |---|---|
 | App shell, JS/CSS | Cache API, via the service worker |
 | Covers | Cache API, cache-first forever |
-| Book files (client copy) | OPFS (`store/books.ts`) — large, user-evictable |
 | Reading position | IndexedDB + retry queue |
 | Display settings | localStorage |
-| Books, covers, metadata, positions | SQLite on the server — the one file |
+| Books, covers, metadata, positions | SQLite, `library.db` — the one file |
 | Library listing | last `/api/books` response mirrored to localStorage |
 
-`navigator.onLine` is the wrong question on a VPN — it only knows whether an
-interface is up, and the phone can have wifi while home is unreachable. A failed
+**The browser does not cache book files.** It did, in OPFS, when the server was
+across a VPN and a book you had not downloaded was a book you could not read.
+Now the backend is on the device: the bytes are already here, in `library.db`,
+so a browser copy only meant storing every opened book twice. What that costs
+is that a stopped backend means an unopenable library — the shelf still draws
+from its localStorage mirror, dimmed.
+
+`navigator.onLine` was the wrong question when the server was remote, and it
+is still the wrong question now that it is local: an interface being up says
+nothing about whether this device's own backend service is running. A failed
 request is the real signal; see `offline.ts`.
 
 The service worker is hand-rolled, not Workbox: the policy is three rules, and
@@ -370,14 +383,16 @@ evaluates signed-distance fields into a pixel buffer and encodes PNG with
 
 ## Deployment
 
-Bind the server to the VPN interface via `HOST` — never `0.0.0.0`. "No auth" is
-fine behind a tunnel and stops being fine when a wildcard bind meets a
-misconfigured router.
+Every device runs the whole app, so **nothing should bind past loopback** —
+not `HOST`, not Vite's `--host`. There is no remote to reach any more, and a
+wildcard bind would expose an app that has no auth by design.
 
-HTTPS is **required** for anything that is not localhost: service workers need a
-secure context, so on a plain-http LAN address offline silently does nothing.
-Browser storage is also origin-scoped, so changing the hostname later orphans
-every cached book and queued position.
+HTTPS is not needed, which is a consequence of that: `localhost` is a secure
+context, so the service worker registers over plain http.
+
+Browser storage is origin-scoped, and the origin is now `http://localhost:5180`
+— keep that port. Changing it orphans every cached book, queued position and
+display setting on that device.
 
 ### Running as a service
 
@@ -396,13 +411,12 @@ loginctl enable-linger bagrat    # so it runs on a headless box with nobody logg
 journalctl --user -u epub-reader-backend -f
 ```
 
-**The reader is reached at Vite's port, not Fastify's.** In dev Vite serves the
-page on 5180 and proxies `/api` to Fastify on 8787, so only the frontend unit
-needs to be reachable; the API stays on loopback behind that proxy. Vite binds
-`::1` by default, which is the box and nothing else, so reading on the phone
-means setting `VITE_HOST` in the frontend unit to the VPN interface address.
-It is written as `--host ${VITE_HOST}` precisely so the flag always has an
-argument: a bare `--host` is a wildcard bind, and there is no auth here.
+**The reader is opened at Vite's port, not Fastify's.** In dev Vite serves the
+page on 5180 and proxies `/api` to Fastify on 8787. Both stay on loopback —
+the app runs on the device doing the reading, so neither needs to be reachable
+from anywhere else, and neither has auth. The port is strict, and browser
+storage is keyed to `http://localhost:5180`, so moving it throws away every
+cached book on that device.
 
 **Dev mode means no CSP and no service worker**, both being production-only.
 That is a deliberate trade for live-editing on the server, but it means the
@@ -425,6 +439,14 @@ Still open: annotations/highlights (a mergeable set — a CRDT would earn its
 place there), and profiles if more than one person reads (one migration:
 `progress` PK becomes `(profile_id, book_id)`).
 
-Also open, smaller: a book removed on one device leaves its OPFS copy orphaned
-on every other one. Deleting through the UI cleans up locally, but nothing
-reconciles OPFS against a shelf that lost a book elsewhere.
+Open and load-bearing: **reading positions do not survive a Syncthing
+conflict.** The `progress` table lives inside `library.db`, every device writes
+its own copy, and whole-file sync cannot merge — so two devices that both read
+will eventually diverge, and the losing side becomes a `.sync-conflict-…` file
+carrying away its positions and any book added there. The shape that fits what
+is already built is to split mutable from immutable: `library.db` for books and
+metadata, which changes only when a book is added, and a `progress-<device>.db`
+that each device alone writes and every device reads, merged with the rules
+already in `store/progress.ts` — `updated_at` for ordering, `furthest` as a
+high-water mark. Until then, read on one device at a time and let it sync
+before starting on another.

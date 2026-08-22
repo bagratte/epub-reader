@@ -7,15 +7,12 @@ PartOf=epub-reader.target
 Type=simple
 WorkingDirectory=/home/bagrat/src/epub-reader
 
-# This is the address the reader is actually reached at, since in dev Vite
-# serves the page and proxies /api to the backend. Vite binds ::1 by default,
-# which is the box itself and nothing else — set this to the VPN interface
-# address to read on the phone.
-#
-# Never `--host` with no value: that is a wildcard bind, and there is no auth
-# here. It is spelled as a variable so the flag always has an argument.
-Environment=VITE_HOST=::1
-ExecStart=/home/bagrat/src/epub-reader/node_modules/.bin/vite --host ${VITE_HOST}
+# This is the address the reader is opened at, since in dev Vite serves the
+# page and proxies /api to the backend. No --host: Vite binds ::1, and the app
+# runs on the device doing the reading, so nothing outside needs to reach it.
+# The port (5180) comes from vite.config.ts and is strict — browser storage is
+# keyed to that origin, so a book cache survives only while it stays put.
+ExecStart=/home/bagrat/src/epub-reader/node_modules/.bin/vite
 Restart=on-failure
 
 [Install]

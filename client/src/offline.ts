@@ -1,5 +1,3 @@
-import { requestPersistence } from './store/books.ts'
-
 /**
  * Registers the service worker, which is what lets the app open with no
  * network at all: a registered worker answers the navigation request from
@@ -8,6 +6,20 @@ import { requestPersistence } from './store/books.ts'
  * Only in production. Vite's dev server has no build manifest to precache,
  * and a stale worker in dev is a debugging trap.
  */
+/**
+ * Ask the browser not to evict us. Safari caps uninstalled sites at 7 days,
+ * and what would go is the queue of positions the backend has not taken yet,
+ * plus the app shell that lets the page open at all.
+ */
+async function requestPersistence(): Promise<boolean> {
+  try {
+    if (await navigator.storage.persisted?.()) return true
+    return (await navigator.storage.persist?.()) ?? false
+  } catch {
+    return false
+  }
+}
+
 export async function registerServiceWorker(): Promise<boolean> {
   if (!import.meta.env.PROD) return false
   // Service workers need a secure context. localhost counts; a plain-http LAN
@@ -27,10 +39,10 @@ export async function registerServiceWorker(): Promise<boolean> {
 type Listener = (online: boolean) => void
 
 /**
- * `navigator.onLine` only knows whether an interface is up, which on a VPN is
- * exactly the wrong question — the phone has wifi but the home server is
- * unreachable. Treat a failed request as the real signal and let the events
- * be a hint.
+ * `navigator.onLine` only knows whether an interface is up, which is the wrong
+ * question here — the backend is this device's own service, and it can be
+ * stopped while the wifi is perfect. Treat a failed request as the real signal
+ * and let the events be a hint.
  */
 export class Connectivity extends EventTarget {
   #online = navigator.onLine
