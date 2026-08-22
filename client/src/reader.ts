@@ -46,7 +46,7 @@ const UNCAPPED_MEASURE = 100_000
 export class Reader {
   #view: any
   #onRelocate?: (r: Relocation) => void
-  #onActivity?: () => void
+  #onDocument?: (doc: Document) => void
   #footnotes = new FootnoteHandler()
   /** foliate's close() is not idempotent — Paginator.destroy() nulls its own
    *  view and then dereferences it on a second call. Track state ourselves. */
@@ -84,15 +84,11 @@ export class Reader {
       onFootnote((e as CustomEvent).detail.view)
     })
 
-    // Pointer events inside the book's iframe never reach the host document,
-    // so without this the auto-hiding chrome would only wake when the pointer
-    // was in a margin — and in scrolled flow there is barely one.
+    // Events inside the book's iframe never reach the host document, so hand
+    // each section's document out as it loads and let the host listen there.
     this.#view.addEventListener('load', (e: CustomEvent) => {
       const doc = e.detail?.doc as Document | undefined
-      if (!doc) return
-      const wake = () => this.#onActivity?.()
-      doc.addEventListener('pointermove', wake, { passive: true })
-      doc.addEventListener('pointerdown', wake, { passive: true })
+      if (doc) this.#onDocument?.(doc)
     })
 
     this.#view.addEventListener('external-link', (e: CustomEvent) => {
@@ -186,9 +182,12 @@ export class Reader {
     this.#onRelocate = fn
   }
 
-  /** Pointer activity, including from inside the book's own documents. */
-  onActivity(fn: () => void) {
-    this.#onActivity = fn
+  /**
+   * Each section's document as it loads. The host's only way to observe what
+   * happens inside the book — nothing in there bubbles out of the iframe.
+   */
+  onDocument(fn: (doc: Document) => void) {
+    this.#onDocument = fn
   }
 
   get toc(): TocEntry[] {

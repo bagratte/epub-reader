@@ -109,6 +109,44 @@ function wakeChrome() {
   }, 2600)
 }
 
+/** How far a touch may drift and still count as a tap rather than a scroll. */
+const TAP_SLOP = 10
+
+/**
+ * Watches one surface — the reader element, or a section's document, which is
+ * inside an iframe and so has to be listened to separately — for the gestures
+ * that should reveal the chrome.
+ *
+ * A mouse says it by moving. Touch cannot: waking on `pointerdown` meant every
+ * flick of a scroll brought the chrome up. A tap ends in a `pointerup` close
+ * to where it began; a scroll ends in `pointercancel`, or in a `pointerup` a
+ * long way off, because the browser takes the gesture over to scroll with it.
+ */
+function watchActivity(target: EventTarget) {
+  let start: { x: number, y: number } | undefined
+
+  target.addEventListener('pointermove', e => {
+    if ((e as PointerEvent).pointerType === 'mouse') wakeChrome()
+  }, { passive: true })
+
+  target.addEventListener('pointerdown', e => {
+    const p = e as PointerEvent
+    if (p.pointerType === 'mouse') wakeChrome()
+    else start = { x: p.clientX, y: p.clientY }
+  }, { passive: true })
+
+  target.addEventListener('pointerup', e => {
+    const p = e as PointerEvent
+    if (!start) return
+    const drift = Math.hypot(p.clientX - start.x, p.clientY - start.y)
+    start = undefined
+    if (drift <= TAP_SLOP) wakeChrome()
+  }, { passive: true })
+
+  target.addEventListener('pointercancel', () => { start = undefined },
+    { passive: true })
+}
+
 // --- views -------------------------------------------------------------------
 
 function show(view: 'library' | 'reader') {
@@ -220,7 +258,7 @@ async function showBook(id: string) {
     if (token !== loadToken) return
 
     reader ??= new Reader($('#view'), showFootnote)
-    reader.onActivity(wakeChrome)
+    reader.onDocument(watchActivity)
     reader.onRelocate(({ cfi, fraction, label, tocHref }) => {
       // A late relocate from a book the user has already navigated away from
       // must not overwrite the new book's position.
@@ -335,8 +373,7 @@ addEventListener('drop', e => e.preventDefault())
 $('#prev').addEventListener('click', () => reader?.goLeft())
 $('#next').addEventListener('click', () => reader?.goRight())
 
-readerEl.addEventListener('pointermove', wakeChrome)
-readerEl.addEventListener('pointerdown', wakeChrome)
+watchActivity(readerEl)
 
 document.addEventListener('keydown', e => {
   if (readerEl.hidden) return
