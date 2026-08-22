@@ -18,7 +18,6 @@ const readerEl = $<HTMLElement>('#reader')
 const shelfEl = $<HTMLElement>('#shelf')
 const labelEl = $<HTMLElement>('#label')
 const pctEl = $<HTMLElement>('#pct')
-const chromeEl = $<HTMLElement>('#chrome')
 const scrimEl = $<HTMLElement>('#scrim')
 const footnoteEl = $<HTMLElement>('#footnote')
 const footnoteBody = $<HTMLElement>('#footnote-body')
@@ -99,12 +98,14 @@ function openPanel(which: 'contents' | 'display') {
 
 // --- reader chrome auto-hide -------------------------------------------------
 
+// The class goes on #reader, not on the header, because header and progress
+// bar fade together — one state, two elements at opposite edges.
 let idleTimer: ReturnType<typeof setTimeout>
 function wakeChrome() {
-  chromeEl.classList.add('awake')
+  readerEl.classList.add('awake')
   clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
-    if (!contents.isOpen && !display.isOpen) chromeEl.classList.remove('awake')
+    if (!contents.isOpen && !display.isOpen) readerEl.classList.remove('awake')
   }, 2600)
 }
 
@@ -219,6 +220,7 @@ async function showBook(id: string) {
     if (token !== loadToken) return
 
     reader ??= new Reader($('#view'), showFootnote)
+    reader.onActivity(wakeChrome)
     reader.onRelocate(({ cfi, fraction, label, tocHref }) => {
       // A late relocate from a book the user has already navigated away from
       // must not overwrite the new book's position.

@@ -46,6 +46,7 @@ const UNCAPPED_MEASURE = 100_000
 export class Reader {
   #view: any
   #onRelocate?: (r: Relocation) => void
+  #onActivity?: () => void
   #footnotes = new FootnoteHandler()
   /** foliate's close() is not idempotent — Paginator.destroy() nulls its own
    *  view and then dereferences it on a second call. Track state ourselves. */
@@ -81,6 +82,17 @@ export class Reader {
     // promise never settles and the note silently never opens.
     this.#footnotes.addEventListener('before-render', (e: Event) => {
       onFootnote((e as CustomEvent).detail.view)
+    })
+
+    // Pointer events inside the book's iframe never reach the host document,
+    // so without this the auto-hiding chrome would only wake when the pointer
+    // was in a margin — and in scrolled flow there is barely one.
+    this.#view.addEventListener('load', (e: CustomEvent) => {
+      const doc = e.detail?.doc as Document | undefined
+      if (!doc) return
+      const wake = () => this.#onActivity?.()
+      doc.addEventListener('pointermove', wake, { passive: true })
+      doc.addEventListener('pointerdown', wake, { passive: true })
     })
 
     this.#view.addEventListener('external-link', (e: CustomEvent) => {
@@ -172,6 +184,11 @@ export class Reader {
 
   onRelocate(fn: (r: Relocation) => void) {
     this.#onRelocate = fn
+  }
+
+  /** Pointer activity, including from inside the book's own documents. */
+  onActivity(fn: () => void) {
+    this.#onActivity = fn
   }
 
   get toc(): TocEntry[] {

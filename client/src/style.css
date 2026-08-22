@@ -224,7 +224,7 @@ foliate-view { flex: 1; min-width: 0; }
   pointer-events: none;
   z-index: 4;
 }
-#chrome.awake { opacity: 1; transform: none; pointer-events: auto; }
+#reader.awake #chrome { opacity: 1; transform: none; pointer-events: auto; }
 #chrome .spacer { flex: 1; }
 
 #chrome button {
@@ -287,7 +287,11 @@ foliate-view { flex: 1; min-width: 0; }
     color-mix(in srgb, var(--bg) 0%, transparent) 100%
   );
   padding-top: 1.1rem;
+  opacity: 0;
+  transform: translateY(0.4rem);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
+#reader.awake #bar { opacity: 1; transform: none; }
 #label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- panels ---------- */
