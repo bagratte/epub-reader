@@ -56,13 +56,22 @@ There is no test framework. Work is verified by driving the running app in a
 browser (Playwright) and reading the console — that is how nearly every bug
 below was found. Type-check, then actually open a book.
 
-Two things make this awkward, and both have bitten before:
+Three things make this awkward, and all have bitten before:
 
 - The book renders in an iframe inside a **closed** shadow root. It is
   unreachable from page JS and absent from Playwright's accessibility snapshot.
   Reach it via `page.frames()` and find the `blob:` frame.
 - Tests that start from clean state miss a whole class of bug. Two sync-queue
   defects only appeared when the app ran against real leftover IndexedDB state.
+- **Playwright's input is not the browser's input.** Its Firefox build emits no
+  pointer events at all for a synthesised mouse — `mousemove` and `mousedown`
+  arrive, `pointermove` and `pointerdown` never do, on a bare page as much as
+  in an iframe — so a pointer-event handler can look broken there and work in
+  the real browser, or the reverse. Its touch is idealised too: `tap()` is a
+  clean down/up that no finger produces. For a gesture the engine itself has
+  to interpret — tap versus scroll — drive Chromium through CDP
+  `Input.dispatchTouchEvent`, which is a real touch sequence, and check what
+  moved rather than that an event fired.
 
 `fixtures/footnotes.epub` exists because no Project Gutenberg book carries
 `epub:type="noteref"`, so footnotes cannot otherwise be exercised.

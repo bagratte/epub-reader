@@ -109,42 +109,23 @@ function wakeChrome() {
   }, 2600)
 }
 
-/** How far a touch may drift and still count as a tap rather than a scroll. */
-const TAP_SLOP = 10
-
 /**
  * Watches one surface — the reader element, or a section's document, which is
- * inside an iframe and so has to be listened to separately — for the gestures
+ * inside an iframe and so has to be listened to separately — for the input
  * that should reveal the chrome.
  *
- * A mouse says it by moving. Touch cannot: waking on `pointerdown` meant every
- * flick of a scroll brought the chrome up. A tap ends in a `pointerup` close
- * to where it began; a scroll ends in `pointercancel`, or in a `pointerup` a
- * long way off, because the browser takes the gesture over to scroll with it.
+ * Both of these are verdicts the browser has already reached. A mouse says
+ * "I am here" by moving, and `mousemove` reports that everywhere. Touch has
+ * no such signal — waking on the start of a touch brought the chrome up on
+ * every flick of a scroll — so what is wanted is the browser's own reading of
+ * tap versus scroll, which is `click`: a gesture that scrolls never produces
+ * one, and a tap does. Reaching that verdict ourselves, from the drift
+ * between `pointerdown` and `pointerup`, worked in Chrome and woke nothing at
+ * all in Firefox.
  */
 function watchActivity(target: EventTarget) {
-  let start: { x: number, y: number } | undefined
-
-  target.addEventListener('pointermove', e => {
-    if ((e as PointerEvent).pointerType === 'mouse') wakeChrome()
-  }, { passive: true })
-
-  target.addEventListener('pointerdown', e => {
-    const p = e as PointerEvent
-    if (p.pointerType === 'mouse') wakeChrome()
-    else start = { x: p.clientX, y: p.clientY }
-  }, { passive: true })
-
-  target.addEventListener('pointerup', e => {
-    const p = e as PointerEvent
-    if (!start) return
-    const drift = Math.hypot(p.clientX - start.x, p.clientY - start.y)
-    start = undefined
-    if (drift <= TAP_SLOP) wakeChrome()
-  }, { passive: true })
-
-  target.addEventListener('pointercancel', () => { start = undefined },
-    { passive: true })
+  target.addEventListener('mousemove', wakeChrome, { passive: true })
+  target.addEventListener('click', wakeChrome, { passive: true })
 }
 
 // --- views -------------------------------------------------------------------
