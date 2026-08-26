@@ -111,6 +111,49 @@ function rangeNear(doc: Document, top: number): Range | null {
   }
 }
 
+/**
+ * Widen a collapsed range enough to be sure it has client rects.
+ *
+ * Every CFI naming a point rather than a span — which is every saved reading
+ * position — resolves to a collapsed range, and a collapsed range is not
+ * reliably measurable: Chromium gives a caret rect, but foliate's paginator
+ * carries this same workaround with the comment "collapsed range doesn't
+ * return client rects sometimes (or always?)". A zero rect here would read as
+ * an offset of zero and scroll to the top of the section, which is a restore
+ * that looks like it worked while losing the reader's place — so don't rely
+ * on the browser being generous.
+ */
+function uncollapse(target: any): any {
+  if (!target?.collapsed) return target
+  const { endOffset, endContainer } = target
+  if (endContainer.nodeType === 1) {
+    const node = endContainer.childNodes[endOffset]
+    return node?.nodeType === 1 ? node : endContainer
+  }
+  if (endOffset + 1 < endContainer.length) target.setEnd(endContainer, endOffset + 1)
+  else if (endOffset > 1) target.setStart(endContainer, endOffset - 1)
+  else return endContainer.parentNode
+  return target
+}
+
+/**
+ * Where an anchor sits inside its own section, or null if it cannot be
+ * measured — a detached document, or a node with no box. The section's
+ * document is never scrolled internally, so a client rect is already the
+ * offset from the top of the section.
+ *
+ * Measures a clone: uncollapse() mutates, and the caller may still want the
+ * original range to select with.
+ */
+function anchorTop(target: any): number | null {
+  const measured = uncollapse(target?.cloneRange?.() ?? target)
+  const rects: DOMRect[] = [...(measured?.getClientRects?.() ?? [])]
+  // A range starting right after a line break gets an extra empty rect at the
+  // end of the previous line; the first one with real area is the right one.
+  const rect = rects.find(r => r.width > 0 && r.height > 0) ?? rects[0]
+  return rect ? rect.top : null
+}
+
 /** One section's live iframe, plus the slot holding its place in the scroller. */
 class SectionView {
   index: number
@@ -140,7 +183,10 @@ export class Continuous extends HTMLElement {
   #scroller!: HTMLElement
   #slots: HTMLElement[] = []
   #views = new Map<number, SectionView>()
-  #loading = new Set<number>()
+  /** Sections being loaded, each mapped to the load nobody else should repeat. */
+  #loading = new Map<number, Promise<void>>()
+  /** Where a navigation is heading. Protected from release until it lands. */
+  #pinned: number | null = null
   #heights: number[] = []
   #measured: boolean[] = []
 
@@ -163,7 +209,7 @@ export class Continuous extends HTMLElement {
    * A slot's offset is only as good as the estimates of every slot above it,
    * so scrolling once and walking away lands the reader a chapter out.
    */
-  #pending: { index: number; offset: number } | null = null
+  #pending: { index: number; offset: number; anchor?: any } | null = null
   #pendingUntil = 0
 
   sections: Section[] = []
@@ -347,6 +393,14 @@ export class Continuous extends HTMLElement {
     }
     const slot = this.#slots[pending.index]
     if (!slot) return
+    // An image or a late font inside the target section moves the anchor as
+    // much as a resized slot above it does, so re-measure rather than trust
+    // the offset taken at navigation time. Keep the last good one when the
+    // anchor cannot be measured — the section may have been released.
+    if (pending.anchor) {
+      const top = anchorTop(pending.anchor)
+      if (top != null) pending.offset = top
+    }
     this.#scroller.scrollTop = slot.offsetTop + this.#margin + pending.offset
   }
 
@@ -375,14 +429,33 @@ export class Continuous extends HTMLElement {
     }
   }
 
-  async #materialise(index: number) {
-    if (this.#destroyed) return
-    if (this.#views.has(index) || this.#loading.has(index)) return
+  /**
+   * Bring a section to life, or hand back the load already doing it.
+   *
+   * Returning early when one is in flight — which is what this did — makes
+   * `await materialise(i)` a lie: goTo() resumed with the section still
+   * loading and no document to measure its anchor in, and silently scrolled
+   * to the top of it instead.
+   */
+  #materialise(index: number): Promise<void> {
+    if (this.#destroyed || this.#views.has(index)) return Promise.resolve()
+    const inFlight = this.#loading.get(index)
+    if (inFlight) return inFlight
+
+    const load = this.#load(index).finally(() => {
+      // A release, or a later load for the same section, may already own the
+      // entry — only ever retire our own.
+      if (this.#loading.get(index) === load) this.#loading.delete(index)
+    })
+    this.#loading.set(index, load)
+    return load
+  }
+
+  async #load(index: number) {
     const section = this.sections[index]
     const slot = this.#slots[index]
     if (!section?.load || !slot) return
 
-    this.#loading.add(index)
     try {
       const src = await section.load()
       if (this.#destroyed || !this.#loading.has(index)) return
@@ -450,17 +523,20 @@ export class Continuous extends HTMLElement {
     } catch {
       // A section that will not load must not take the scroller down with it.
       // Its slot keeps its estimated height and stays blank.
-    } finally {
-      this.#loading.delete(index)
     }
   }
 
   #release(index: number) {
+    // Never release the section being reported on — relocate would lose its
+    // range — nor the one a navigation is on its way to. A reconcile runs
+    // while goTo() awaits its section, and the target is by definition far
+    // from the current scroll position, so it is exactly what this loop would
+    // otherwise throw away: cancelling the load that goTo is waiting on and
+    // landing the reader at the top of the chapter instead of in it.
+    if (index === this.#index || index === this.#pinned) return
     this.#loading.delete(index)
     const view = this.#views.get(index)
     if (!view) return
-    // Never release the section being reported on, or relocate loses its range.
-    if (index === this.#index) return
 
     this.#views.delete(index)
     view.observer?.disconnect()
@@ -616,6 +692,15 @@ export class Continuous extends HTMLElement {
 
   async goTo({ index, anchor, select }: { index: number; anchor?: any; select?: boolean }) {
     if (index == null || index < 0 || index >= this.sections.length) return
+    this.#pinned = index
+    try {
+      await this.#goTo(index, anchor, select)
+    } finally {
+      this.#pinned = null
+    }
+  }
+
+  async #goTo(index: number, anchor?: any, select?: boolean) {
     await this.#materialise(index)
     if (this.#destroyed) return
 
@@ -623,6 +708,7 @@ export class Continuous extends HTMLElement {
     if (!slot) return
     const view = this.#views.get(index)
     let offset = 0
+    let resolved: any
 
     if (view?.document) {
       const doc = view.document
@@ -631,15 +717,16 @@ export class Continuous extends HTMLElement {
         const content = (this.#heights[index] ?? 0) - this.#margin * 2
         offset = target * content
       } else if (target) {
-        // A Range or an Element; the document is never scrolled internally, so
-        // its client rect is its offset from the top of the section.
-        const rect = target.getBoundingClientRect?.()
-        if (rect) offset = rect.top
+        // A Range or an Element. Measured rather than read off a bounding
+        // rect, because a collapsed range has none — see anchorTop().
+        const top = anchorTop(target)
+        if (top != null) offset = top
+        resolved = target
         if (select && target.startContainer) this.#select(doc, target)
       }
     }
 
-    this.#pending = { index, offset }
+    this.#pending = { index, offset, anchor: resolved }
     this.#pendingUntil = Date.now() + ANCHOR_SETTLE_MS
     this.#scroller.scrollTop = slot.offsetTop + this.#margin + offset
     this.#index = index
@@ -652,9 +739,9 @@ export class Continuous extends HTMLElement {
       anchor?.startContainer?.ownerDocument ?? anchor?.ownerDocument
     for (const view of this.#views.values()) {
       if (view.document !== doc) continue
-      const rect = anchor.getBoundingClientRect?.()
-      if (rect) {
-        this.#scroller.scrollTop = view.slot.offsetTop + this.#margin + rect.top
+      const top = anchorTop(anchor)
+      if (top != null) {
+        this.#scroller.scrollTop = view.slot.offsetTop + this.#margin + top
       }
       if (select && view.document) this.#select(view.document, anchor)
       this.#report('anchor')

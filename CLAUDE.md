@@ -291,12 +291,40 @@ Things that cost time here, all of them non-obvious:
 - **A navigation has to be re-applied while heights settle.** A slot's offset
   is only as good as the estimates above it, so scrolling once lands a chapter
   out; `#reapply()` re-pins the target on every measurement for
-  `ANCHOR_SETTLE_MS`.
+  `ANCHOR_SETTLE_MS`. It re-measures the anchor each time rather than reusing
+  the offset computed at navigation time, because an image or a late font
+  *inside* the target section moves the anchor as much as a resized slot above
+  it does.
+- **Windowing and navigation race, and windowing used to win.** `goTo()` awaits
+  `#materialise(target)`; a `#reconcile()` landing during that await saw the
+  target far below the current scroll — which it always is, that being the
+  point of navigating — and released it, cancelling the load `goTo` was waiting
+  on. `goTo` then resumed with no document to measure the anchor in and fell
+  back to offset 0: **the top of the right chapter**, which looks like a
+  restore that worked. Two things keep it honest now — `#pinned` makes the
+  navigation target unreleasable for the duration, and `#materialise` hands
+  back the in-flight load rather than returning early when one exists, so
+  awaiting it means what it says.
+- **A collapsed range is not reliably measurable.** Every saved position is a
+  point CFI, and so resolves to a collapsed range; Chromium gives it a caret
+  rect, but foliate's paginator carries `uncollapse()` with the comment
+  "collapsed range doesn't return client rects sometimes (or always?)". Ours
+  measures through `anchorTop()` for the same reason — a zero rect would read
+  as offset 0 and silently restore to the top of the section.
 
 Worth knowing: **a failed restore silently overwrites the saved position**,
 because arriving at the top of the book relocates and the debounced write
 follows. That is not specific to this renderer, but it destroys the evidence
 whenever restore breaks — capture the CFI before reloading when testing it.
+Polling `GET /api/progress/:id` from the shell while driving the app is the
+cheap way to see the sequence: the write that lands and the write that
+overwrites it are two rows a second apart.
+
+**Reloading is not the same test as reopening.** A reload put the reader back
+where they were for weeks while the restore was completely broken — a warm
+load wins races a cold one loses, and the browser may re-apply the scroller's
+own offset on top. Testing a restore means a fresh document: a new tab, or
+navigating away and back.
 
 ## foliate-js quirks
 
