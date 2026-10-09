@@ -466,6 +466,18 @@ in git history at commit b2b9576 if it is ever wanted back.
 They take the same ports as `npm run dev` (5180 and 8787), so stop the target
 before running that by hand.
 
+### Running on Android (Termux)
+
+`termux/` runs the same dev-mode shape on demand on the phone: `start.sh`
+starts the API (plain `tsx`, no `watch` — nothing is edited there) and Vite,
+each only if not already up, waits for both, and opens `localhost:5180`;
+`stop.sh` stops them; `install-shortcuts.sh` writes Termux:Widget shortcuts
+("Reader", "Reader stop"). Logs go to `~/.cache/epub-reader/`. Setup is
+`npm ci` plus a `.env` whose `DATABASE_URL` points into the Syncthing folder
+on shared storage; the Android settings (overlay permission, unrestricted
+battery, child process restrictions off) are the ones `../notes` already
+needed, and apply to Termux as a whole.
+
 Backups are `library.db` and nothing else — genuinely nothing else, since
 there is no WAL — but it is now the size of the whole library, so a copy is a
 full copy. `cp` is fine when the server is stopped or idle; to take one while
